@@ -1,0 +1,945 @@
+:root {
+  --live: #ff2d4b;
+  --hot: #ffd24a;
+  --ok: #35ff7a;
+  --ui: rgba(255, 255, 255, 0.92);
+  --dim: rgba(255, 255, 255, 0.55);
+  --font: 'Segoe UI', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', system-ui, sans-serif;
+  --mono: 'SFMono-Regular', Consolas, 'Roboto Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #000;
+  color: var(--ui);
+  font-family: var(--font);
+  overflow: hidden;
+  user-select: none;
+}
+
+.app {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+.viewport {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 45%, rgba(0, 0, 0, 0.75) 100%);
+}
+
+/* ---------- HUD ---------- */
+
+.hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+}
+
+.hud-topleft {
+  position: absolute;
+  top: 18px;
+  left: 22px;
+}
+
+.live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  font-size: 15px;
+  color: #fff;
+}
+
+.live .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--live);
+  box-shadow: 0 0 12px var(--live);
+  animation: pulse 1.4s infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.handle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--dim);
+  letter-spacing: 0.06em;
+}
+
+.hud-topright {
+  position: absolute;
+  top: 16px;
+  right: 24px;
+  text-align: right;
+}
+
+.viewers-label,
+.likes-label {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--dim);
+}
+
+.viewers {
+  font-family: var(--mono);
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.05;
+}
+
+.hud-chat {
+  position: absolute;
+  right: 24px;
+  top: 108px;
+  width: min(260px, 26vw);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.chat-line {
+  opacity: 0.85;
+  animation: fadein 0.18s ease-out;
+  line-height: 1.25;
+}
+
+.chat-line.hot {
+  opacity: 1;
+  color: var(--hot);
+  font-weight: 600;
+}
+
+@keyframes fadein {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.chat-user {
+  color: #7fc2ff;
+  margin-right: 6px;
+  font-weight: 600;
+}
+
+.chat-line.hot .chat-user {
+  color: #ff9ec4;
+}
+
+.hud-bottomleft {
+  position: absolute;
+  left: 22px;
+  bottom: 24px;
+}
+
+.likes {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 700;
+  color: #ff6f91;
+}
+
+.hud-bottomcenter {
+  position: absolute;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+
+.clip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  transition: box-shadow 0.2s;
+}
+
+.clip.chase {
+  border-color: var(--hot);
+  box-shadow: 0 0 26px rgba(255, 210, 74, 0.45);
+}
+
+.clip-label {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--dim);
+}
+
+.stars {
+  font-size: 17px;
+  letter-spacing: 2px;
+}
+
+.star {
+  color: rgba(255, 255, 255, 0.22);
+}
+
+.star.on {
+  color: var(--hot);
+}
+
+.clip-mult {
+  font-family: var(--mono);
+  font-weight: 800;
+  color: var(--hot);
+}
+
+.engagement {
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+}
+
+.engagement b {
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 16px;
+}
+
+.crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.crosshair.on {
+  background: var(--live);
+  box-shadow: 0 0 10px var(--live);
+}
+
+.toast {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  transform: translateX(-50%);
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #fff;
+  animation: fadein 0.12s ease-out;
+}
+
+.hint {
+  position: absolute;
+  left: 50%;
+  /* リクエストカード（上端）と重ならない位置 */
+  top: 34%;
+  transform: translateX(-50%);
+  font-size: 15px;
+  letter-spacing: 0.22em;
+  color: var(--live);
+  font-weight: 700;
+}
+
+.connection-lost {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #000;
+  color: rgba(255, 255, 255, 0.75);
+  font-family: var(--mono);
+  letter-spacing: 0.35em;
+  font-size: 22px;
+}
+
+/* ---------- Super Challenge ---------- */
+
+.challenge {
+  position: absolute;
+  left: 50%;
+  top: 22px;
+  transform: translateX(-50%);
+  /* 極端に狭いウィンドウでも読めるように下限を置く */
+  width: clamp(250px, 38vw, 340px);
+  padding: 12px 16px 14px;
+  text-align: center;
+  border: 1px solid rgba(255, 210, 74, 0.55);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(60, 40, 0, 0.85), rgba(20, 12, 0, 0.85));
+  box-shadow: 0 0 40px rgba(255, 190, 40, 0.25);
+  pointer-events: none;
+  animation: fadein 0.2s ease-out;
+}
+
+.challenge.accepted {
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.challenge-head {
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  color: var(--hot);
+}
+
+.challenge-title {
+  margin-top: 6px;
+  font-size: 23px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+.challenge-desc {
+  margin-top: 2px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+}
+
+.challenge-reward {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 18px;
+  color: var(--hot);
+  font-weight: 700;
+}
+
+.challenge-accept {
+  margin-top: 10px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  animation: pulse 1s infinite;
+}
+
+.challenge-timer {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+  margin-left: 8px;
+}
+
+.challenge-bar {
+  margin-top: 10px;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+.challenge-bar-fill {
+  height: 100%;
+  background: var(--hot);
+  transition: width 0.1s linear;
+}
+
+/* ---------- Overlays ---------- */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.86);
+  overflow-y: auto;
+  padding: 24px 0;
+}
+
+.overlay-card {
+  width: min(680px, 90vw);
+  text-align: center;
+}
+
+/* ---------- モード選択 ---------- */
+
+.modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 24px 0 6px;
+}
+
+.mode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 16px 16px;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+
+.mode:hover {
+  background: rgba(255, 45, 75, 0.08);
+  border-color: var(--live);
+  transform: translateY(-2px);
+}
+
+.mode-name {
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  color: #fff;
+}
+
+.mode-tag {
+  font-size: 12px;
+  color: var(--live);
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.mode-line {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+
+.mode-cta {
+  margin-top: 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.mode:hover .mode-cta {
+  color: var(--live);
+}
+
+.result-mode {
+  margin-left: 10px;
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.overlay-card h1 {
+  margin: 0;
+  font-size: 46px;
+  letter-spacing: 0.16em;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 0 30px rgba(255, 45, 75, 0.55);
+}
+
+.tagline {
+  color: var(--dim);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.controls {
+  list-style: none;
+  padding: 0;
+  margin: 22px auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 24px;
+  max-width: 480px;
+  font-size: 12px;
+}
+
+.controls li {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 4px;
+}
+
+.controls b {
+  font-family: var(--mono);
+  color: var(--hot);
+}
+
+.controls span {
+  color: var(--dim);
+}
+
+.rules {
+  font-size: 13px;
+  line-height: 1.8;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.cta {
+  margin-top: 26px;
+  font-weight: 800;
+  letter-spacing: 0.24em;
+  color: var(--live);
+  animation: pulse 1.6s infinite;
+}
+
+/* ---------- Result ---------- */
+
+.result {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.92);
+  /* テンポ分析を開くと縦に伸びるのでスクロールできるようにする */
+  overflow-y: auto;
+  padding: 24px 0;
+}
+
+.result-card {
+  width: min(520px, 90vw);
+  text-align: center;
+}
+
+.result-head {
+  font-size: 12px;
+  letter-spacing: 0.34em;
+  color: var(--dim);
+}
+
+.result-verdict {
+  margin-top: 6px;
+  font-size: 44px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+}
+
+.result-verdict.survived {
+  color: var(--ok);
+}
+
+.result-verdict.died {
+  color: var(--live);
+}
+
+.result-stats {
+  margin: 26px 0 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 26px;
+  text-align: left;
+}
+
+.result-stats dt {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--dim);
+}
+
+.result-stats dd {
+  margin: 2px 0 0;
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.result-viral {
+  margin-top: 22px;
+  color: var(--hot);
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.result-note {
+  margin-top: 22px;
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.result-actions {
+  margin-top: 30px;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.result-actions button {
+  padding: 10px 18px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #000;
+  background: var(--ui);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.result-actions button.ghost {
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.result-actions button:hover {
+  filter: brightness(1.15);
+}
+
+/* ---------- Debug ---------- */
+
+.debug {
+  position: absolute;
+  left: 22px;
+  top: 90px;
+  width: 240px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.debug-head {
+  color: var(--ok);
+  letter-spacing: 0.2em;
+  margin-bottom: 6px;
+}
+
+.debug-row {
+  display: flex;
+  justify-content: space-between;
+  color: var(--dim);
+}
+
+.debug-row b {
+  color: #fff;
+}
+
+/* ---------- v2 HUD ---------- */
+
+.selfie-tag {
+  margin-left: 10px;
+  padding: 1px 7px;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  border-radius: 3px;
+  background: var(--hot);
+  color: #000;
+}
+
+.haunting {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.haunting-label {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--dim);
+}
+
+.haunting-bar {
+  display: inline-block;
+  width: 96px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.haunting-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #4a7fb5, #b046d8);
+  transition: width 0.4s linear;
+}
+
+.discoveries {
+  margin-top: 5px;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--dim);
+}
+
+.earnings-label {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--dim);
+}
+
+.earnings {
+  font-family: var(--mono);
+  font-size: 30px;
+  font-weight: 700;
+  color: #ffe08a;
+  line-height: 1.1;
+}
+
+.hud-bottomleft .likes {
+  font-size: 15px;
+  margin-top: 2px;
+}
+
+.subject {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.prompt {
+  position: absolute;
+  left: 50%;
+  top: 60%;
+  transform: translateX(-50%);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: #fff;
+  padding: 5px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.cashout {
+  position: absolute;
+  left: 50%;
+  bottom: 110px;
+  transform: translateX(-50%);
+  text-align: center;
+  padding: 14px 26px;
+  border: 1px solid rgba(53, 255, 122, 0.45);
+  border-radius: 8px;
+  background: rgba(0, 20, 8, 0.72);
+}
+
+.cashout-label {
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  color: var(--dim);
+}
+
+.cashout-value {
+  font-family: var(--mono);
+  font-size: 34px;
+  font-weight: 800;
+  color: var(--ok);
+}
+
+.cashout-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: #fff;
+  animation: pulse 1.6s infinite;
+}
+
+.footage {
+  position: absolute;
+  left: 50%;
+  top: 12%;
+  transform: translateX(-50%);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--hot);
+  text-align: center;
+  animation: fadein 0.2s ease-out;
+}
+
+.challenge.temptation {
+  border-color: rgba(255, 96, 140, 0.7);
+  background: linear-gradient(180deg, rgba(70, 12, 30, 0.9), rgba(24, 4, 10, 0.9));
+  box-shadow: 0 0 46px rgba(255, 60, 110, 0.3);
+}
+
+.challenge.temptation .challenge-head {
+  color: #ff6f91;
+}
+
+/* ---------- Result（収支） ---------- */
+
+.money {
+  margin: 22px 0 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.money-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  padding: 3px 0;
+}
+
+.money-row b {
+  font-family: var(--mono);
+  font-size: 18px;
+  color: var(--ui);
+}
+
+.money-row.lost b {
+  color: var(--live);
+}
+
+.money-row.bonus b {
+  color: var(--ok);
+}
+
+.money-row.final {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.money-row.final b {
+  font-size: 30px;
+  color: #ffe08a;
+}
+
+/* ---------- テンポ分析 ---------- */
+
+.tempo {
+  margin-top: 22px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.tempo summary {
+  cursor: pointer;
+  letter-spacing: 0.2em;
+  font-size: 11px;
+  padding: 6px 0;
+}
+
+.tempo-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 16px;
+  padding: 8px 0 2px;
+  align-items: baseline;
+}
+
+.tempo-grid b {
+  font-family: var(--mono);
+  color: var(--ui);
+}
+
+.tempo-grid b.good {
+  color: var(--ok);
+}
+
+.tempo-grid b.bad {
+  color: var(--live);
+}
+
+.mouse-hint {
+  /* 左上のステータス列の中に流し込むので、他のHUDと重なりようがない */
+  margin-top: 6px;
+  /* 幅の狭いウィンドウでも右側のチャット欄に届かないようにする */
+  max-width: min(210px, 32vw);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.5);
+  animation: fadein 0.2s ease-out;
+}
+
+/* ---------- リクエスト：リスク表示と第二段階 ---------- */
+
+.challenge-head .risk {
+  float: right;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+
+.risk-low { color: rgba(255, 255, 255, 0.45); }
+.risk-medium { color: #9fd8ff; }
+.risk-high { color: var(--hot); }
+.risk-extreme { color: var(--live); }
+
+.challenge-title.small {
+  font-size: 17px;
+  letter-spacing: 0.04em;
+}
+
+.challenge.stage2 {
+  border-color: rgba(255, 255, 255, 0.55);
+  background: linear-gradient(180deg, rgba(30, 34, 44, 0.92), rgba(12, 14, 18, 0.92));
+}
+
+.options {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.option {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.75);
+  padding: 3px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+.option b {
+  font-family: var(--mono);
+  color: var(--hot);
+}
+
+.selfie-tag.danger {
+  background: var(--live);
+  color: #fff;
+}
+
+.next-reward {
+  margin-top: 8px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.55);
+}
