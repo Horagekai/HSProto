@@ -1,0 +1,4 @@
+# HAUNTED STREAMER — 社内プレイテスト用のプロトタイプ
+# 検索エンジンにはインデックスさせない
+User-agent: *
+Disallow: /
