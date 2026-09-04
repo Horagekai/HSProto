@@ -9,7 +9,7 @@
 
 インストール不要。ブラウザで開くだけで遊べます（PC + マウス推奨）。
 
-**https://erinduxiao.github.io/haunted-streamer-mvp/**
+**https://horagekai.github.io/HSProto/**
 
 画面をクリックするとマウスが固定されて視点操作になります（`Esc` で解除）。
 
@@ -100,7 +100,7 @@ Vite の `base` は `'./'`（相対パス）にしてあるので、
 特定のパスに固定したい場合だけ `VITE_BASE` を渡してビルドします。
 
 ```bash
-VITE_BASE=/haunted-streamer-mvp/ npm run build
+VITE_BASE=/HSProto/ npm run build
 ```
 
 ---
