@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CONFIG } from '../config';
 import { clamp01, pick, randRange } from '../core/util';
 import type { RequestView } from '../core/store';
-import {
+import { FLOOR1_POOL,
   Floor1Director,
   Floor1Objects,
   WorldMemory,
@@ -96,6 +96,23 @@ const DISCOVERY_CHAT: Record<string, string[]> = {
   ghost: ['is that a person', "that's not normal", 'get closer', 'selfie with it', 'leave'],
 };
 
+/**
+ * 環境イベントのヒント。断定しない。
+ * 「幽霊がいる」ではなく「今なんか鳴った？」で止めるのが目的（§15）。
+ */
+const AMBIENT_HINTS: Record<string, string> = {
+  HousePop: 'THE HOUSE POPPED',
+  FloorCreakDistant: 'A FLOOR CREAKED SOMEWHERE',
+  PipeKnock: 'THE PIPES KNOCKED',
+  DistantWaterDrop: 'A DROP OF WATER',
+  FridgeHumStop: 'THE HUM STOPPED',
+  TVStaticTick: 'THE TV TICKED',
+  PhoneClick: 'THE PHONE CLICKED',
+  LightCordSway: 'THE CORD IS SWAYING',
+  ObjectTinyShift: 'DID THAT MOVE?',
+  FabricRustle: 'FABRIC, SHIFTING',
+};
+
 export class Floor1Mode {
   objects = new Floor1Objects();
   director = new Floor1Director();
@@ -119,6 +136,9 @@ export class Floor1Mode {
   goal = false;
   private lastTemptationDone = false;
   private returningTime = 0;
+  private pressureLogged = 0;
+  private pendingLogged = 0;
+  private pendingFailLogged = 0;
   private lastEntranceDistance = 999;
 
   // --- KPI ---
@@ -156,6 +176,9 @@ export class Floor1Mode {
     this.goal = false;
     this.lastTemptationDone = false;
     this.returningTime = 0;
+    this.pressureLogged = 0;
+    this.pendingLogged = 0;
+    this.pendingFailLogged = 0;
     this.lastEntranceDistance = 999;
     this.lastObject = null;
     this.sinceObject = 999;
@@ -599,11 +622,85 @@ export class Floor1Mode {
   // World memory の遅れた結果
   // ---------------------------------------------------------------- //
 
+  /**
+   * 低 Haunted 用の環境イベント（§13-21）。
+   * 狙いは「幽霊がいる！」ではなく「今なんか鳴った？」。確信は持たせない。
+   *
+   * 同じ HousePop でも毎回同じに聞こえないよう、音源方向・距離・遅延・variant を振る。
+   * 全部を背後から出すとすぐ読まれるので、方向は定義側の sources から選ぶ。
+   */
+  private runAmbient(def: HorrorEventDef) {
+    const sources = def.sources ?? ['distant_room', 'side'];
+    const src = sources[Math.floor(Math.random() * sources.length)];
+    // 音源の遠さ。same_room ほど近く、distant_room ほど遠い
+    const base =
+      src === 'same_room' ? 4 :
+      src === 'ahead' || src === 'side' ? 10 :
+      src === 'behind' ? 7 : 18;
+    const dist = base * (0.75 + Math.random() * 0.6);
+    const variant = def.variants ? Math.floor(Math.random() * def.variants) : 0;
+    // 演出上の部屋。定義に相手オブジェクトがあればその部屋、なければ今いない部屋へ
+    const targetRoom = def.relatedObject
+      ? (FLOOR1_OBJECTS.find((o) => o.id === def.relatedObject)?.room ?? this.room())
+      : src === 'same_room'
+        ? this.room()
+        : this.elsewhere();
+
+    switch (def.family) {
+      case 'AMBIENT_HOUSE':
+        this.d.sfxKnock(dist + variant * 3);
+        break;
+      case 'AMBIENT_WATER':
+        if (def.id === 'DistantWaterDrop') this.d.sfxKnock(dist + 6 + variant * 2);
+        else this.d.sfxKnock(dist + 2);
+        break;
+      case 'AMBIENT_ELECTRIC':
+        if (def.id === 'FridgeHumStop') this.d.sfxDoor(dist + 8);
+        else if (def.id === 'PhoneClick') this.d.sfxPhone(dist + 14);
+        else this.d.sfxWhisper(dist + 8);
+        break;
+      case 'AMBIENT_OBJECT':
+        if (def.id === 'ObjectTinyShift') this.d.sfxKnock(dist + 4);
+        else this.d.sfxDoor(dist + 6);
+        break;
+      case 'AMBIENT_LIVING':
+        this.d.sfxWhisper(dist + 6);
+        break;
+    }
+
+    // 断定的なヒントは出さない。確信を持たせないのが目的
+    if (Math.random() < 0.45) this.d.hint(AMBIENT_HINTS[def.id] ?? '...', 1.8);
+    this.d.chat('idle', 1);
+    this.markEvent('anomaly');
+    this.d.log(
+      'horror_event_triggered',
+      `event_id=${def.id} family=${def.family} intensity=${def.intensity} ` +
+        `haunted=${this.d.haunting().toFixed(0)} tension=${this.horror.tension.toFixed(0)} room=${this.room()}`,
+    );
+    this.d.log(
+      'ambient_event',
+      `ambient_family=${def.family} variant=${variant} source=${src} ` +
+        `source_room=${this.room()} target_room=${targetRoom} distance=${dist.toFixed(1)}`,
+    );
+  }
+
+  /** 今いない部屋を1つ返す。音を毎回自分の背後から出さないため */
+  private elsewhere() {
+    const here = this.room();
+    const rooms = ['entrance', 'butsuma', 'hallway', 'washroom', 'bath', 'ldk'].filter((r) => r !== here);
+    return rooms[Math.floor(Math.random() * rooms.length)];
+  }
+
   /** HorrorDirector が選んだイベントを実際に鳴らす */
   private runHorror(def: HorrorEventDef) {
     const p = this.d.playerPos();
     const f = this.d.playerForward();
     const behind = { x: p.x - f.x * 5, z: p.z - f.z * 5 };
+
+    if (def.family.startsWith('AMBIENT')) {
+      this.runAmbient(def);
+      return;
+    }
 
     switch (def.id) {
       case 'LightFlicker':
@@ -898,7 +995,21 @@ export class Floor1Mode {
     // 自分から危険を選んだ。世界はこれを見てから返事を決める
     this.lastRiskTier = a.def.riskTier;
     this.horror.markGreed(a.def.riskTier);
-    if (a.def.lastTemptation) this.finalTaken = true;
+    if (a.def.lastTemptation) {
+      this.finalTaken = true;
+      // §22-24。スコア加点だけでは保証にならないので、返事そのものを予約する。
+      // 何が返ってくるかは Director が Utility で選ぶので、毎回違う。
+      const tags = a.def.object === 'phone'
+        ? ['phone', 'behind']
+        : a.def.object === 'ghost'
+          ? ['ghost']
+          : ['ghost', 'behind'];
+      this.horror.requireConsequence('LAST_TEMPTATION', tags, a.def.object);
+      this.d.log(
+        'pending_consequence_created',
+        `source=LAST_TEMPTATION request=${a.def.id} tags=${tags.join('/')}`,
+      );
+    }
     this.d.log(
       'request_completed_event',
       `requestId=${a.def.id} riskTier=${a.def.riskTier} object=${a.def.object ?? '-'}`,
@@ -1099,8 +1210,37 @@ export class Floor1Mode {
     }
 
     // --- HorrorDirector。世界側の反応と「間」はこちらが決める ---
+    const evalsBefore = this.horror.evaluations;
     const fired = this.horror.update(dt, this.horrorContext());
+    if (this.horror.evaluations > evalsBefore) {
+      const dbg = this.horror.debug();
+      this.d.log(
+        'horror_evaluation',
+        `selected=${dbg.selected || 'Nothing'} tension=${dbg.tension} pressure=${dbg.pressure} ` +
+          `band=${dbg.pressureBand} recent_ghost_count=${dbg.ghost30s} recent_strong_count=${dbg.strong30s} ` +
+          `candidates=${dbg.candidates.slice(0, 3).join('|') || '-'}`,
+      );
+    }
     if (fired) this.runHorror(fired);
+    // Pressure の変化。Run B のような密度上昇を後から追えるようにする
+    while (this.pressureLogged < this.horror.pressureLog.length) {
+      const e = this.horror.pressureLog[this.pressureLogged++];
+      this.d.log(
+        'horror_pressure_changed',
+        `before=${e.before} after=${e.after} source_event=${e.source} decay=${CONFIG.horror.pressure.decay}`,
+      );
+    }
+    while (this.pendingLogged < this.horror.pendingLog.length) {
+      const e = this.horror.pendingLog[this.pendingLogged++];
+      this.d.log(e.kind, e.detail);
+    }
+    while (this.pendingFailLogged < this.horror.pendingFailReasons.length) {
+      const e = this.horror.pendingFailReasons[this.pendingFailLogged++];
+      this.d.log(
+        'pending_consequence_failed',
+        `source=${e.source} elapsed=${e.elapsed} candidate_rejections=${e.rejections.join('|')}`,
+      );
+    }
 
     // 電話を鳴らす条件
     this.maybeRingPhone(dt);
@@ -1231,6 +1371,53 @@ export class Floor1Mode {
       constraint: def.type === 'constraint',
       constraintLeft: Math.max(0, (def.constraintSeconds ?? 0) - a.held),
     };
+  }
+
+  /**
+   * §35。Last Temptation は通常の Run では到達を待つしかなく検証できないので、
+   * 強制的にそこまで持っていくデバッグ操作を用意する。
+   *
+   *   const f1 = game.dev.floor1();
+   *   f1.forceGoal(); f1.forceReturning(); f1.forceLastTemptation(); f1.forceTake();
+   */
+  forceGoal() {
+    this.goal = true;
+    this.d.log('debug_force', 'FORCE_STREAM_GOAL');
+  }
+
+  forceReturning() {
+    this.returningTime = 99;
+    this.d.log('debug_force', 'FORCE_RETURNING');
+  }
+
+  /** Last Temptation を今すぐ提示する。返り値は提示できたか */
+  forceLastTemptation() {
+    const def = FLOOR1_POOL.find((d) => d.lastTemptation);
+    if (!def) return false;
+    if (this.active) this.endRequest('dismissed');
+    this.forceGoal();
+    this.forceReturning();
+    this.offer(def);
+    this.d.log('debug_force', `FORCE_LAST_TEMPTATION id=${def.id}`);
+    return true;
+  }
+
+  /** 提示中のリクエストを即完了させる（Last Temptation を「乗った」ことにする） */
+  forceTake() {
+    const a = this.active;
+    if (!a) return false;
+    this.finish(a, a.def.reward);
+    this.endRequest('done');
+    return true;
+  }
+
+  /**
+   * 未解決の返事を、その場で返す（§37）。
+   * Run 終了の直前に呼ぶ。プレイヤーを足止めするより、出際に一発返す方が自然。
+   */
+  flushPendingConsequence() {
+    const def = this.horror.forceResolvePending();
+    if (def) this.runHorror(def);
   }
 
   /** デバッグ表示 */

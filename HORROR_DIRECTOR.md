@@ -1,4 +1,4 @@
-# Horror Director v1
+# Horror Director v1.1
 
 [`src/systems/horrorDirector.ts`](src/systems/horrorDirector.ts) /
 [`src/systems/horrorEvents.ts`](src/systems/horrorEvents.ts)
@@ -189,3 +189,188 @@ E: … → GhostReposition → LightFlicker → DoorCreak → GhostStand → Hou
 Run C は仏壇を長く鳴らして `altar_overplayed` を作り、その後別の部屋で `DistantBell` が
 3回鳴っている。Run E は Selfie の後に `SofaEmpty`（ソファが空になっている）で終わっている。
 どちらも「自分がやったことへの返事」になっている。
+
+---
+
+# v1.1 — Global Horror Pressure / Low-Haunted Ambient / Last Temptation Guarantee
+
+v1 のプレイテストで出た3点を直したもの。
+
+## 13. Horror Pressure
+
+v1 は個別イベントに `maxPerRun` を付けただけだったので、**環境イベントが枯れた枠を
+Ghost イベントが埋めて** Run B が平均 8.7 秒間隔になった。
+個別の上限では「Run 全体で今どれだけ刺激を与えたか」を管理できていなかった。
+
+| | 意味 |
+| --- | --- |
+| **EstimatedTension** | 今プレイヤーがどれくらい緊張していると推定するか（プレイヤー心理） |
+| **HorrorPressure** | Director が最近どれだけイベントを投下したか（**自分の出力密度**） |
+
+```text
+加算  subtle +5 / minor +7 / medium +11 / strong +16 / climax +22
+      Ghost Visual・Spatial +3 / Fake Rush +5 / Chase +7
+減衰  指数減衰（半減期およそ14秒）
+帯    0-5 LOW / 5-9 NORMAL / 9-14 HIGH / 14+ SATURATED
+```
+
+**減衰を定数にしてはいけない。** 定数減衰だと Pressure の絶対値が
+「どの種類のイベントが支配的か」で決まってしまい、安い環境音が並ぶだけで
+Pressure が天井に張り付き、Ghost が Run 中ずっと 0 件になった（実測）。
+指数減衰にすると Pressure が「直近の刺激密度」そのものを表す。
+
+Pressure が高いほど:
+
+```text
+Nothing                 + (P - 5) × 5.0
+subtle / minor / medium - (P - 5) × 4.2 / 4.6 / 5.0
+strong / climax         - (P - 5) × 5.6 / 6.0
+Ghost 系                さらに - (P - 5) × 0.4
+```
+
+`minScore` も Pressure で動かす（全体一律では上げない）。
+
+```text
+LOW / NORMAL  34
+HIGH          55
+SATURATED     72
+```
+
+## 14. Ghost Chain 防止
+
+```text
+14秒以内に Ghost イベント        → -40
+25秒以内に Ghost イベント 2件    → -60
+同 Family が直近30秒に1件ごとに   → -16
+```
+
+`maxPerRun` は「同じものの擦りすぎ」防止として残す。役割を分ける。
+
+```text
+maxPerRun       = content repetition protection
+HorrorPressure  = pacing density protection
+```
+
+## 15. 候補が枯れたら黙る
+
+残りものを出さない。
+
+```text
+Nothing以外の候補が2件以下 → Nothing +15
+1件以下                    → Nothing +30
+```
+
+## 16. 低 Haunted 用の語彙
+
+v1 の安全プレイは `LightFlicker / HouseSettle / DoorCreak` の3種しか出ず、
+すぐパターンが読めた。明確な幽霊イベントを増やすのではなく、
+**「今なんか鳴った？」で止まる違和感** の語彙を10種足した。
+
+| Family | Event |
+| --- | --- |
+| AMBIENT_HOUSE | HousePop / FloorCreakDistant |
+| AMBIENT_WATER | PipeKnock / DistantWaterDrop |
+| AMBIENT_ELECTRIC | FridgeHumStop / TVStaticTick / PhoneClick |
+| AMBIENT_OBJECT | LightCordSway / ObjectTinyShift |
+| AMBIENT_LIVING | FabricRustle |
+
+すべて `subtle`（`ObjectTinyShift` のみ `minor`）。断定するヒントは出さず、45%の確率でしか出さない。
+
+同じ `HousePop` でも毎回同じに聞こえないよう、**音源方向・距離・variant** を振る。
+全部を背後から出すとすぐ読まれるので、方向は定義側の `sources` から選ぶ。
+
+```text
+ambient_family=AMBIENT_WATER variant=2 source=ahead source_room=washroom target_room=bath distance=8.9
+ambient_family=AMBIENT_LIVING variant=1 source=distant_room source_room=hallway target_room=ldk distance=16.2
+```
+
+環境系の `baseWeight` は 30〜34。Ghost 系（44〜48）より低い **ノイズフロア** として扱う。
+同じ重みにすると全部を押しのけて、Run 全体が環境音だけになる（実測）。
+
+さらに `haunted > 50` では環境系を後ろに下げる。
+家が荒れているのに「気のせい」ばかり返すと、世界が反応していないように見えるため。
+
+## 17. Last Temptation は必ず返事を返す
+
+v1 は `finalTemptationTaken → score +26` だけで、**保証になっていなかった**。
+v1.1 では予約そのものを持つ。
+
+```text
+Last Temptation 実行
+  → PendingConsequence{ required: true, earliest: +2s, latest: +6s, contextTags }
+  → earliest まで通常イベントを止める（短い溜め。即ジャンプスケアにしない）
+  → Meaningful な候補だけを Utility でスコアし、Nothing を候補から外して抽選
+  → latest が近づくと urgency +最大100
+  → 候補が全滅したら fallback（BehindFootstep / DoorCreak / DistantFootstep）
+```
+
+Meaningful でないもの:
+
+```text
+Nothing
+subtle（ほとんど聞こえない環境音）
+AMBIENT_* すべて
+今回の Run で既に2回以上見たもの
+```
+
+**何が返るかは固定しない。** Pressure が SATURATED なら strong を -45 して、
+Meaningful だが軽い結果へ寄せる（§38）。
+
+出口で Run が終わりそうな場合は、`leaveSite()` の直前に未解決の予約をその場で返す。
+プレイヤーを足止めはしない。
+
+## 18. 検証
+
+不変条件テスト 10/10（v1 と同じ）に加えて、Run タイプ別のシナリオテストを追加。
+
+```js
+const s = await import('/src/dev/horrorScenarios.ts');
+console.table(s.runScenarios());
+```
+
+```text
+PASS  A Safe: 低Hauntedの語彙       unique=15 families=8
+PASS  B Greedy: 密度制御            avgGap=15.3s short(<6s)=1/27 maxPressure=29.3
+PASS  C Ghost-heavy: Ghost連発なし  ghost=12/28 (43%) within10s=0
+PASS  D 枯渇: Ghostで埋めない       events=6/90s ghost=3 chained=0 silence=81%
+PASS  E LastTemptation: 必ず返事    fired=30/30 avgLatency=2.8s unique=7
+```
+
+Scenario D が今回のバグ再現ケース。
+`LightFlicker / HouseSettle / DoorCreak / DistantFootstep` と環境系すべてを
+使い切った状態から 90 秒回して、Ghost が空いた枠を埋めないことを見る。
+
+Last Temptation は通常 Run では到達を待つしかないので、強制する操作を用意した。
+
+```js
+const f1 = window.__HS.dev.floor1();
+f1.forceLastTemptation();   // FORCE STREAM GOAL → RETURNING → 提示
+f1.forceTake();             // 乗る
+```
+
+## 19. 5Run 実測（v1 → v1.1）
+
+| Run | 件数 | 平均間隔 | 中央値 | 範囲 | 系統 | Ambient | Ghost | 強 | 強連続 | 反復 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A 安全 | 21 | 10.0s | 10.1 | 5.0–12.8 | 8 | 8種/5系統 | 0 | 0 | 0 | 0% |
+| B Request多め | 30 | 10.2s | 10.0 | 7.4–16.6 | 9 | 9種/5系統 | 1 | 1 | 0 | 0% |
+| C 挑発多め | 36 | 10.9s | 10.5 | 5.4–19.4 | 12 | 10種/5系統 | 4 | 1 | 0 | 0% |
+| D 逃げて戻る | 31 | 11.9s | 11.3 | 7.4–18.9 | 11 | 10種/5系統 | 4 | 1 | 0 | 0% |
+| E 欲張り | 31 | 13.1s | 11.3 | 4.8–34.4 | 13 | 9種/5系統 | 5 | 2 | 0 | 0% |
+
+```text
+v1  Run B: 平均 8.7s / 系統 7 / Ghost が枠を埋める
+v1.1 Run B: 平均 10.2s / 系統 9 / 6秒未満の間隔 0件
+v1  安全Run: LightFlicker / HouseSettle / DoorCreak の3種のみ
+v1.1 安全Run: 8種 5系統
+```
+
+Run E（欲張り）の終盤が §52 の狙い通りになっている。
+
+```text
+… → ObjectTinyShift → GhostPeek → SofaEmpty → OwnVoice → DistantPhone
+  → BehindFootstep → FakeRush → GhostReposition → GhostPeek
+```
+
+Ghost が続くのではなく、World Memory の結果（SofaEmpty / OwnVoice / DistantPhone）が
+間に挟まっている。

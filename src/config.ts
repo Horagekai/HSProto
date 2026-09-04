@@ -610,19 +610,61 @@ export const CONFIG = {
      * ここが速すぎると Tension が常に底に張り付き、
      * 弱いイベントが延々と選ばれ続けて「波」が消える（実測でRunの95%がT<20だった）。
      */
-    tensionDecay: 1.8,
+    tensionDecay: 1.1,
     /** これを超えたら「飽和」。強いイベントのスコアを大きく下げる */
     saturatedTension: 72,
     /** これ未満のスコアの候補は捨てる。低いと弱いイベントが常時ばら撒かれる */
     minScore: 34,
+    /** ここを超えると「気のせい」系は後ろに下がる。世界が反応していないように見せない */
+    ambientFadeHaunted: 50,
+    /** ここを超えて荒れているのに山が来ないなら、強いイベントを押し出す */
+    climaxHaunted: 55,
+    climaxDrought: 70,
+    ambientFadePerPoint: 0.5,
+    /** Pressure が高いときだけ最低スコアを上げる。全体一律では上げない */
+    minScoreHigh: 55,
+    minScoreSaturated: 72,
+    /**
+     * Director 自身の出力密度。Tension（プレイヤーの緊張推定）とは別物で、
+     * 「最近どれだけ刺激を投下したか」を見る。出せることと出すべきことを分ける。
+     */
+    pressure: {
+      /** 指数減衰の係数。半減期およそ14秒 */
+      decay: 0.05,
+      max: 60,
+      bands: [5, 9, 14] as [number, number, number],
+      /** intensity rank ごとの減点係数。強いものほど強く抑える */
+      penaltyPerPoint: [4.2, 4.6, 5.0, 5.6, 6.0],
+      /** Ghost 系への上乗せ */
+      ghostExtra: 0.4,
+      ghostNearWindow: 14,
+      ghostNearPenalty: 40,
+      ghostWideWindow: 25,
+      ghostWidePenalty: 60,
+      /** Family 単位の短期予算 */
+      familyWindow: 30,
+      familyBudgetPenalty: 16,
+      /** Pressure が高いと Nothing が上がる */
+      nothingPerPoint: 5.0,
+      /** 候補が枯れたら黙る。残りものを出さない */
+      scarcityBonus: [30, 15] as [number, number],
+    },
+    /** 最後の誘惑に乗ったら必ず返事を返す */
+    pendingConsequence: {
+      earliest: 2,
+      latest: 6,
+      /** これ以上見たイベントは「返事」として弱い */
+      maxSeenBefore: 2,
+      fallback: ['BehindFootstep', 'DoorCreak', 'DistantFootstep'],
+    },
     /** 危険な行動を自分でやったときの Tension 加算（Risk Tier 1〜5） */
     greedTension: [3, 6, 10, 15, 20],
     /** 危険な行動の直後、無関係なイベントを抑える窓 */
     anticipation: { min: 1.5, max: 5 },
     /** 出来事の強さごとの「間」 */
     relief: {
-      minor: [3, 6] as [number, number],
-      medium: [5, 9] as [number, number],
+      minor: [4, 9] as [number, number],
+      medium: [6, 12] as [number, number],
       strong: [8, 14] as [number, number],
       chase: [10, 20] as [number, number],
     },

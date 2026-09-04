@@ -1053,6 +1053,9 @@ export class Game {
   }
 
   private leaveSite() {
+    // §37。最後の誘惑に乗った直後に出口へ着いても、返事が返らないまま Run が終わらないようにする。
+    // 足止めはしない。出る瞬間にその場で返す。
+    this.f1?.flushPendingConsequence();
     const active = this.requests.active;
     if (active?.kind === 'one_last_call' && !active.engaged) {
       // 断って帰った。これは正しい判断であり、ペナルティは無い（§28）

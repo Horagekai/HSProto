@@ -589,6 +589,7 @@ src/
     oneGhostBot.ts       同上（ONE GHOST MODE）
     floor1Bot.ts         同上（HS FLOOR 1 MODE）。5パターンの遊び方
     horrorTests.ts       HorrorDirector の不変条件テスト
+    horrorScenarios.ts   Runタイプ別のシナリオテスト（枯渇 / Ghost連発 / Last Temptation）
 ```
 
 ---

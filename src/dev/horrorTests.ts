@@ -154,8 +154,14 @@ export function runHorrorTests(): TestResult[] {
     const d = new HorrorDirector(FLOOR1_HORROR);
     d.reset();
     run(d, 120, baseCtx());
-    const hasNothing = d.lastCandidates.some((c) => c.def.id === 'Nothing');
-    add('Nothingが候補に入る', hasNothing, `candidates=${d.lastCandidates.map((c) => c.def.id).join(',')}`);
+    // 候補が増えたので上位6件ではなく全候補を見る
+    const hasNothing = d.lastAllCandidates.some((c) => c.def.id === 'Nothing');
+    const nothing = d.lastAllCandidates.find((c) => c.def.id === 'Nothing');
+    add(
+      'Nothingが候補に入る',
+      hasNothing,
+      `nothing=${nothing?.score.toFixed(0)} of ${d.lastAllCandidates.length} candidates`,
+    );
   }
 
   // 8. Tension が 0..100 に収まる

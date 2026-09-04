@@ -201,6 +201,20 @@ export interface Snapshot {
       sinceStrong: number;
       relief: number;
       anticipation: number;
+      pressure: number;
+      pressureBand: string;
+      ghost30s: number;
+      events30s: number;
+      strong30s: number;
+      nothingScore: number;
+      minScore: number;
+      pending: {
+        source: string;
+        required: boolean;
+        earliest: number;
+        latest: number;
+        elapsed: number;
+      } | null;
       candidates: string[];
       rejected: string[];
       selected: string;

@@ -65,6 +65,26 @@ export function DebugPanel() {
             k="Relief / Anticip."
             v={`${s.f1Debug.horror.relief.toFixed(1)} / ${s.f1Debug.horror.anticipation.toFixed(1)}`}
           />
+          <Row
+            k="Horror Pressure"
+            v={`${s.f1Debug.horror.pressure.toFixed(1)} ${s.f1Debug.horror.pressureBand}`}
+          />
+          <Row
+            k="Last 30s"
+            v={`${s.f1Debug.horror.events30s} events / ${s.f1Debug.horror.strong30s} strong / ${s.f1Debug.horror.ghost30s} ghost`}
+          />
+          <Row
+            k="Nothing / MinScore"
+            v={`${s.f1Debug.horror.nothingScore} / ${s.f1Debug.horror.minScore}`}
+          />
+          {s.f1Debug.horror.pending && (
+            <Row
+              k="Pending Consequence"
+              v={`${s.f1Debug.horror.pending.source} req=${s.f1Debug.horror.pending.required} ` +
+                `win ${s.f1Debug.horror.pending.earliest}..${s.f1Debug.horror.pending.latest} ` +
+                `elapsed ${s.f1Debug.horror.pending.elapsed}`}
+            />
+          )}
           <Row k="Top Candidates" v={s.f1Debug.horror.candidates.join(' / ') || '-'} />
           <Row k="Rejected" v={s.f1Debug.horror.rejected.join(' ') || '-'} />
           <Row k="Selected" v={s.f1Debug.horror.selected || '-'} />
