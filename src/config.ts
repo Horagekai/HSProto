@@ -131,11 +131,12 @@ export const CONFIG = {
     start: 5,
     /**
      * 時間経過による自然上昇。
-     * **0 にした。** Haunting はプレイヤーの行動だけで上がる。
-     * ここが時間で上がると、立っているだけで Haunting Phase が変わり、
-     * 全対象の Novelty が戻ってしまう（＝待つだけで安全に稼げる）。
+     * 100 / (30分 * 60秒) = 0.0556。放置だけなら30分で満タンになる速さ。
+     *
+     * 撮れ高の Novelty はこの値と切り離してある（状態キーに Haunting を含めていない）ので、
+     * ここを上げても「待つだけで安全に稼げる」状態には戻らない。
      */
-    perSec: 0,
+    perSec: 0.055,
     inspect: 3,
     firstDiscovery: 4,
     requestComplete: 8,
