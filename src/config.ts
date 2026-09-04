@@ -597,6 +597,41 @@ export const CONFIG = {
   },
 
   /**
+   * HorrorDirector。
+   *
+   * 「一定時間ごとに何か出してPlayerを飽きさせない」ためのものではない。
+   * 何か起こす時と、何も起こさない時を選び、Run全体に呼吸のある曲線を作るための値。
+   */
+  horror: {
+    /** 判断する間隔。毎フレーム選ばない */
+    evalInterval: [0.9, 1.6] as [number, number],
+    /**
+     * Tension の自然減衰（毎秒）。
+     * ここが速すぎると Tension が常に底に張り付き、
+     * 弱いイベントが延々と選ばれ続けて「波」が消える（実測でRunの95%がT<20だった）。
+     */
+    tensionDecay: 1.8,
+    /** これを超えたら「飽和」。強いイベントのスコアを大きく下げる */
+    saturatedTension: 72,
+    /** これ未満のスコアの候補は捨てる。低いと弱いイベントが常時ばら撒かれる */
+    minScore: 34,
+    /** 危険な行動を自分でやったときの Tension 加算（Risk Tier 1〜5） */
+    greedTension: [3, 6, 10, 15, 20],
+    /** 危険な行動の直後、無関係なイベントを抑える窓 */
+    anticipation: { min: 1.5, max: 5 },
+    /** 出来事の強さごとの「間」 */
+    relief: {
+      minor: [3, 6] as [number, number],
+      medium: [5, 9] as [number, number],
+      strong: [8, 14] as [number, number],
+      chase: [10, 20] as [number, number],
+    },
+    /** 直近この秒数に、強いイベントをこの数まで */
+    strongWindow: 20,
+    strongBudget: 1,
+  },
+
+  /**
    * HS FLOOR 1 MODE。
    * 本編1階のレイアウトで、Discovery / HOLD / RequestPool Director を検証する。
    */
@@ -653,7 +688,13 @@ export const CONFIG = {
     /** 配信目標 */
     goal: { target: 20000, minTime: 120, minDiscoveries: 5 },
 
-    /** 幽霊の段階。Danger のしきい値 */
+    /**
+     * 幽霊の段階。
+     * Danger だけだと、FLOOR 1 では欲張っても Danger が伸びず幽霊が一生ソファに座ったままだった。
+     * 「その家をどれだけ荒らしたか」= Haunted も効かせる。
+     *   escalation = max(danger, haunted * hauntedWeight)
+     */
+    hauntedWeight: 0.62,
     ghost: {
       aware: 18,
       standing: 40,

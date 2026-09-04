@@ -56,6 +56,18 @@ export function DebugPanel() {
           <Row k="Candidates" v={s.f1Debug.candidates.join(' / ') || '-'} />
           <Row k="Rejected" v={s.f1Debug.rejected.join(' ') || '-'} />
           <Row k="Memory" v={s.f1Debug.memory.join(' ') || '-'} />
+          <div className="debug-head">HORROR DIRECTOR</div>
+          <Row k="Estimated Tension" v={String(s.f1Debug.horror.tension)} />
+          <Row k="Pacing Need" v={s.f1Debug.horror.pacing.toFixed(2)} />
+          <Row k="Last Horror" v={`${s.f1Debug.horror.sinceHorror.toFixed(1)}s ago`} />
+          <Row k="Last Strong" v={`${s.f1Debug.horror.sinceStrong.toFixed(1)}s ago`} />
+          <Row
+            k="Relief / Anticip."
+            v={`${s.f1Debug.horror.relief.toFixed(1)} / ${s.f1Debug.horror.anticipation.toFixed(1)}`}
+          />
+          <Row k="Top Candidates" v={s.f1Debug.horror.candidates.join(' / ') || '-'} />
+          <Row k="Rejected" v={s.f1Debug.horror.rejected.join(' ') || '-'} />
+          <Row k="Selected" v={s.f1Debug.horror.selected || '-'} />
         </>
       )}
       <Row k="FPS" v={String(s.fps)} />

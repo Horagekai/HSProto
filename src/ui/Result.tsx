@@ -188,6 +188,46 @@ export function ResultScreen({ onRestart, onMenu, onDownload }: Props) {
           </details>
         )}
 
+        {r.floor1 && (
+          <details className="tempo">
+            <summary>HORROR DIRECTOR</summary>
+            <div className="tempo-grid">
+              <span>Horror events / strong</span>
+              <b>
+                {r.floor1.horror.events} / {r.floor1.horror.strongEvents}
+              </b>
+              <span>Avg gap / strong gap</span>
+              <b>
+                {r.floor1.horror.avgGap.toFixed(1)}s / {r.floor1.horror.avgStrongGap.toFixed(1)}s
+              </b>
+              <span>Silence selection rate</span>
+              <b className={r.floor1.horror.silenceRate >= 30 ? 'good' : 'bad'}>
+                {r.floor1.horror.silenceRate}%
+              </b>
+              <span>Event family diversity</span>
+              <b className={r.floor1.horror.familyDiversity >= 4 ? 'good' : 'bad'}>
+                {r.floor1.horror.familyDiversity}
+              </b>
+              <span>Repeated event rate</span>
+              <b className={r.floor1.horror.repeatRate <= 15 ? 'good' : 'bad'}>
+                {r.floor1.horror.repeatRate}%
+              </b>
+              <span>World-memory-linked horror</span>
+              <b className={r.floor1.horror.memoryLinked > 0 ? 'good' : 'bad'}>
+                {r.floor1.horror.memoryLinked} ({r.floor1.horror.memoryLinkedRate}%)
+              </b>
+              <span>Tension &gt;80 / &lt;20 time share</span>
+              <b className={r.floor1.horror.tensionHighShare <= 25 ? 'good' : 'bad'}>
+                {r.floor1.horror.tensionHighShare}% / {r.floor1.horror.tensionLowShare}%
+              </b>
+              <span>Strong after strong</span>
+              <b className={r.floor1.horror.strongAfterStrong === 0 ? 'good' : 'bad'}>
+                {r.floor1.horror.strongAfterStrong}
+              </b>
+            </div>
+          </details>
+        )}
+
         <details className="tempo" open>
           <summary>ECONOMY — NOVELTY / RISK</summary>
           <div className="tempo-grid">

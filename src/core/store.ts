@@ -85,6 +85,21 @@ export interface ResultData {
     goal: boolean;
     lastTemptation: boolean;
     memory: string[];
+    horror: {
+      events: number;
+      strongEvents: number;
+      avgGap: number;
+      avgStrongGap: number;
+      silenceRate: number;
+      familyDiversity: number;
+      repeatRate: number;
+      memoryLinked: number;
+      memoryLinkedRate: number;
+      tensionHighShare: number;
+      tensionLowShare: number;
+      strongAfterStrong: number;
+      sequence: string[];
+    };
   } | null;
   /** Novelty / Repetition / Risk Reward の検証KPI */
   economy: {
@@ -179,6 +194,17 @@ export interface Snapshot {
     candidates: string[];
     rejected: string[];
     memory: string[];
+    horror: {
+      tension: number;
+      pacing: number;
+      sinceHorror: number;
+      sinceStrong: number;
+      relief: number;
+      anticipation: number;
+      candidates: string[];
+      rejected: string[];
+      selected: string;
+    };
   } | null;
   /** Novelty / Risk の内訳（デバッグパネルでのみ表示。通常UIには出さない） */
   stateKey: string;

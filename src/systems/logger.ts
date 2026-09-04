@@ -80,7 +80,13 @@ export type LogEvent =
   | 'request_selected'
   | 'object_became_eligible'
   | 'delayed_consequence'
-  | 'world_beat';
+  | 'world_beat'
+  // --- Horror Director v1 ---
+  | 'horror_director_evaluation'
+  | 'horror_event_triggered'
+  | 'world_memory_created'
+  | 'world_memory_used'
+  | 'request_completed_event';
 
 export interface LogRow {
   /** どちらの検証モードか（§38） */

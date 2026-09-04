@@ -66,6 +66,8 @@ v1は「怪異を怒らせて逃げるゲーム」に寄りすぎていたため
 
 | **HS FLOOR 1 MODE** | 本編1階のレイアウトで検証 | 仏壇・遺影・電話・風呂・冷蔵庫・ソファの人影。押しっぱなしのチキンレース → **[FLOOR1.md](FLOOR1.md)** |
 
+世界側の恐怖と「間」を決める Pacing Director は → **[HORROR_DIRECTOR.md](HORROR_DIRECTOR.md)**
+
 STANDARD MODE の経済（安全な反復は枯れる / 危険と新規性が儲かる）と
 Request Director v2（命令ではなく誘惑）は → **[ECONOMY.md](ECONOMY.md)**
 
@@ -576,6 +578,8 @@ src/
     novelty.ts           撮れ高の新規性（対象+状態）とRisk倍率
     floor1.ts            FLOOR 1 の RequestPool と Director（フィルタ→スコア→抽選）
     floor1Mode.ts        FLOOR 1 の本体（Discovery / HOLD / World Memory / Ghost）
+    horrorDirector.ts    世界側の恐怖と「間」を決める Pacing Director
+    horrorEvents.ts      恐怖イベントの定義（データのみ）
     audio.ts             WebAudio合成音
     logger.ts            プレイログとKPI集計
   ui/
@@ -583,7 +587,8 @@ src/
   dev/
     autoplay.ts          実物のGameを操作するバランス検証ボット（STANDARD）
     oneGhostBot.ts       同上（ONE GHOST MODE）
-    floor1Bot.ts         同上（HS FLOOR 1 MODE）
+    floor1Bot.ts         同上（HS FLOOR 1 MODE）。5パターンの遊び方
+    horrorTests.ts       HorrorDirector の不変条件テスト
 ```
 
 ---

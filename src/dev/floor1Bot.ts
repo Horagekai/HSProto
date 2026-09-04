@@ -12,11 +12,15 @@ import { createFloor1NavGrid, roomAt } from '../world/floor1Level';
 import type { Game } from '../game';
 
 export type Floor1Style =
-  /** 一通り見て回るが、危ないことはしない */
+  /** A: 安全寄り。見て回るだけ */
   | 'tourist'
-  /** 報酬が見合うものには乗る。HOLDも途中まで */
+  /** B: Requestをかなり受ける */
   | 'curious'
-  /** 全部やる。HOLDは限界まで押す */
+  /** C: 挑発多め。HOLDを長く押す */
+  | 'provoker'
+  /** D: 途中で逃げて、また戻る */
+  | 'flighty'
+  /** E: かなり欲張る */
   | 'greedy';
 
 export interface Floor1Run {
@@ -41,6 +45,7 @@ export interface Floor1Run {
   memory: string[];
   maxDanger: number;
   maxHaunted: number;
+  horror: Record<string, unknown>;
 }
 
 const DT = 1 / 60;
@@ -88,9 +93,19 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
   let goingHome = false;
 
   // どこまで欲張るか
-  const holdTarget = style === 'tourist' ? 0 : style === 'curious' ? 5.5 : 14;
-  const riskCeiling = style === 'tourist' ? 1 : style === 'curious' ? 3 : 5;
-  const leaveAt = style === 'tourist' ? 200 : style === 'curious' ? 300 : seconds - 30;
+  const holdTarget =
+    style === 'tourist' ? 0
+    : style === 'curious' ? 5.5
+    : style === 'provoker' ? 9
+    : style === 'flighty' ? 3
+    : 14;
+  const riskCeiling =
+    style === 'tourist' ? 1 : style === 'curious' ? 3 : style === 'flighty' ? 2 : 5;
+  const leaveAt =
+    style === 'tourist' ? 200
+    : style === 'curious' ? 300
+    : style === 'flighty' ? 150
+    : seconds - 30;
 
   while (t < seconds && dev.phase() === 'playing') {
     t += DT;
@@ -109,7 +124,8 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
     const takeIt = !!active && active.def.riskTier <= riskCeiling;
 
     // --- 目的地 ---
-    goingHome = t > leaveAt;
+    // flighty は途中で一度帰りかけ、また戻る
+    goingHome = style === 'flighty' ? (t > leaveAt && t < leaveAt + 45) || t > seconds - 60 : t > leaveAt;
     let target = { x: CONFIG.entrance.x, z: CONFIG.entrance.z };
     let lookAt: [number, number] | null = null;
     if (!goingHome) {
@@ -199,7 +215,8 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
 
     // --- 帰る ---
     if (goingHome && dev.distanceToEntrance() <= CONFIG.entrance.range && !active) {
-      dev.key('KeyE');
+      // flighty は最初の帰宅では出ずに引き返す
+      if (!(style === 'flighty' && t < seconds - 60)) dev.key('KeyE');
     }
 
     dev.step(DT);
@@ -233,12 +250,15 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
     memory: (k.memory as string[]) ?? [],
     maxDanger: Math.round(maxDanger),
     maxHaunted: Math.round(maxHaunted),
+    horror: (k.horror ?? {}) as unknown as Record<string, unknown>,
   };
 }
 
 export function runAllFloor1(game?: Game): Floor1Run[] {
   const g = game ?? (window as unknown as { __HS: Game }).__HS;
-  return (['tourist', 'curious', 'greedy'] as Floor1Style[]).map((s) => runFloor1(g, s));
+  return (['tourist', 'curious', 'provoker', 'flighty', 'greedy'] as Floor1Style[]).map((s) =>
+    runFloor1(g, s),
+  );
 }
 
 /** 同じスタイルで3回まわして、Requestの並びが毎回同じでないかを見る */

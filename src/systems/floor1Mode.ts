@@ -12,6 +12,8 @@ import {
   type GhostState,
 } from './floor1';
 import { FLOOR1_OBJECTS, roomAt, type Floor1Room } from '../world/floor1Level';
+import { HorrorDirector, type GhostAction, type HorrorEventDef, type RunPhase } from './horrorDirector';
+import { FLOOR1_HORROR } from './horrorEvents';
 
 /** Floor1Mode が外の世界へ触るための口 */
 export interface Floor1Deps {
@@ -98,6 +100,8 @@ export class Floor1Mode {
   objects = new Floor1Objects();
   director = new Floor1Director();
   memory = new WorldMemory();
+  /** 世界側の恐怖と「間」を決める。Request とは別物 */
+  horror = new HorrorDirector(FLOOR1_HORROR);
 
   active: ActiveRequest | null = null;
   /** 提示待ち。近くにいるだけでは出さず、間を置く */
@@ -137,7 +141,9 @@ export class Floor1Mode {
     this.objects.reset();
     this.director.reset();
     this.memory.reset();
-    this.memory.onFire = (c) => this.fireConsequence(c.kind, c.memory);
+    this.horror.reset();
+    this.memory.onCreated = (m) =>
+      this.d.log('world_memory_created', `memory=${m} haunted=${this.d.haunting().toFixed(0)}`);
     this.active = null;
     this.pendingDef = null;
     this.pendingDelay = 0;
@@ -153,6 +159,8 @@ export class Floor1Mode {
     this.lastEntranceDistance = 999;
     this.lastObject = null;
     this.sinceObject = 999;
+    this.lastRiskTier = 0;
+    this.finalTaken = false;
     this.completedIds.clear();
     this.discoveries = 0;
     this.offered = 0;
@@ -453,6 +461,7 @@ export class Floor1Mode {
         this.d.toast(`+¥${t.reward.toLocaleString()}`, 1.6);
         this.d.chat('provoke', 2);
         if (a.tier >= 2) this.voluntaryContinuations += 1;
+        this.horror.markGreed(Math.min(5, a.tier + 1));
         this.d.log('hold_tier_reached', `request=${a.def.id} tier=${a.tier} duration=${a.hold.toFixed(1)} reward=${t.reward}`);
         this.holdTierEffect(a.def, a.tier);
       }
@@ -522,7 +531,6 @@ export class Floor1Mode {
       this.d.sfxStep();
       this.d.hint('SOMETHING IS BEHIND YOU', 2.6);
       this.d.addDanger(8);
-      this.maybeGhostStir();
     }
   }
 
@@ -548,7 +556,8 @@ export class Floor1Mode {
   private updateGhost(dt: number) {
     this.ghostRelocateCd = Math.max(0, this.ghostRelocateCd - dt);
     const g = CONFIG.floor1.ghost;
-    const danger = this.d.danger();
+    // 家をどれだけ荒らしたかも段階に効かせる（Danger だけでは一生座ったままだった）
+    const danger = Math.max(this.d.danger(), this.d.haunting() * CONFIG.floor1.hauntedWeight);
     const prev = this.ghost;
     let next: GhostState = this.ghost;
     if (this.d.ghostChasing() || danger >= g.chasing) next = 'chasing';
@@ -558,6 +567,8 @@ export class Floor1Mode {
     else if (this.ghost !== 'seated') next = 'aware';
 
     if (next !== prev) {
+      if (next === 'chasing') this.horror.markChase(true);
+      else if (prev === 'chasing') this.horror.markChase(false);
       this.ghost = next;
       this.objects.setState('ghost', next);
       this.d.log('subject_state_changed', `subject=ghost old=${prev} new=${next}`);
@@ -588,51 +599,133 @@ export class Floor1Mode {
   // World memory の遅れた結果
   // ---------------------------------------------------------------- //
 
-  private fireConsequence(kind: string, memory: string) {
+  /** HorrorDirector が選んだイベントを実際に鳴らす */
+  private runHorror(def: HorrorEventDef) {
     const p = this.d.playerPos();
-    switch (kind) {
-      case 'distant_bell':
+    const f = this.d.playerForward();
+    const behind = { x: p.x - f.x * 5, z: p.z - f.z * 5 };
+
+    switch (def.id) {
+      case 'LightFlicker':
+        this.d.flickerLamp(p.x, p.z, 2.0);
+        break;
+      case 'HouseSettle':
+        this.d.sfxKnock(16);
+        break;
+      case 'DoorCreak':
+        this.d.sfxDoor(13);
+        break;
+      case 'DistantFootstep':
+        this.d.sfxStep();
+        this.d.hint('FOOTSTEPS, SOMEWHERE', 2.2);
+        break;
+      case 'BehindFootstep':
+        this.d.sfxStep();
+        this.d.hint('A STEP BEHIND YOU', 2.4);
+        this.d.addDanger(3);
+        break;
+      case 'PortraitTilt':
+        this.objects.setState('portraits', 'tilted');
+        this.d.sfxKnock(10);
+        this.d.hint('SOMETHING ABOUT THE PORTRAITS', 2.4);
+        break;
+      case 'PortraitChanged':
+        this.objects.setState('portraits', 'wrong');
+        this.d.hint('THAT IS NOT THE SAME FACE', 2.8);
+        this.d.addHaunting(3);
+        break;
+      case 'MirrorAnomaly':
+        this.objects.setState('mirror', 'anomaly');
+        this.d.sfxWhisper(4);
+        this.d.hint('SOMETHING IN THE MIRROR', 2.4);
+        break;
+      case 'FridgeHum':
+      case 'KitchenNoise':
+        this.d.sfxKnock(11);
+        break;
+      case 'DistantBell':
         this.d.sfxBell();
         this.d.hint('A BELL. SOMEWHERE ELSE.', 2.6);
         break;
-      case 'light_sway':
-        this.d.flickerLamp(p.x, p.z, 2.0);
-        break;
-      case 'portrait_tilt':
-      case 'portrait_changed':
-        this.d.hint('SOMETHING ABOUT THE PORTRAITS', 2.4);
-        this.objects.setState('portraits', 'wrong');
-        break;
-      case 'distant_phone':
-        this.d.sfxPhone(16);
+      case 'DistantPhone':
+        this.d.sfxPhone(18);
         this.d.hint('A PHONE, FURTHER IN', 2.6);
         break;
-      case 'own_voice':
+      case 'OwnVoice':
         this.d.sfxWhisper(2);
-        this.d.hint('THAT WAS YOUR VOICE', 2.6);
+        this.d.hint('THAT WAS YOUR VOICE', 2.8);
+        this.d.addDanger(5);
         break;
-      case 'footstep_behind':
-        this.d.sfxStep();
-        this.d.hint('A STEP BEHIND YOU', 2.4);
-        this.d.addDanger(4);
-        break;
-      case 'water_running':
-      case 'drain':
+      case 'WaterRunning':
         this.d.sfxWhisper(10);
         this.d.hint('WATER, RUNNING SOMEWHERE', 2.4);
         break;
-      case 'door_sound':
-      case 'kitchen_noise':
-        this.d.sfxDoor(12);
-        this.d.hint('SOMETHING MOVED', 2.2);
-        break;
-      case 'sofa_empty':
+      case 'SofaEmpty':
+        this.d.setGhostSeatVisible(false);
         this.d.hint('THE SOFA IS EMPTY NOW', 2.6);
         break;
+      case 'GhostPeek':
+        this.requestGhost('PEEK', behind);
+        break;
+      case 'GhostReposition':
+        this.requestGhost('REPOSITION', behind);
+        this.d.hint('IT IS NOT WHERE IT WAS', 2.4);
+        break;
+      case 'GhostCrossing':
+        this.requestGhost('CROSS', behind);
+        this.d.hint('SOMETHING CROSSED THE HALL', 2.4);
+        break;
+      case 'GhostStand':
+        this.requestGhost('STAND', SOFA);
+        break;
+      case 'FakeRush':
+        this.requestGhost('FAKE_RUSH', behind);
+        this.d.hint('IT MOVED AT YOU', 2.2);
+        this.d.addDanger(6);
+        break;
     }
-    this.d.chat('anomaly', 2);
+
+    const tags = def.requiredMemories?.length ? `memory=${def.requiredMemories[0]}` : '';
+    this.d.chat(def.intensity === 'subtle' ? 'idle' : 'anomaly', def.intensity === 'subtle' ? 1 : 2);
     this.markEvent('anomaly');
-    this.d.log('delayed_consequence', `memory=${memory} kind=${kind}`);
+    this.d.log(
+      'horror_event_triggered',
+      [
+        `event_id=${def.id}`,
+        `family=${def.family}`,
+        `intensity=${def.intensity}`,
+        `haunted=${this.d.haunting().toFixed(0)}`,
+        `tension=${this.horror.tension.toFixed(0)}`,
+        `room=${this.room()}`,
+        `ghost=${this.ghost}`,
+        tags,
+      ].filter(Boolean).join(' '),
+    );
+    if (def.requiredMemories?.length) {
+      this.d.log('world_memory_used', `memory=${def.requiredMemories[0]} event=${def.id}`);
+    }
+  }
+
+  /** Ghost へは行動要求だけ出す。どう動くかは Ghost 側 */
+  private requestGhost(action: GhostAction, spot: { x: number; z: number }) {
+    if (action === 'STAND') {
+      this.d.setGhostSeatVisible(false);
+      this.d.wakeGhost(SOFA.x, SOFA.z);
+      this.d.hint('IT STOOD UP', 2.4);
+      this.d.chat('danger', 3);
+      this.memory.remember('ghost_stood');
+      return;
+    }
+    if (this.ghost === 'seated') return;
+    if (action === 'FAKE_RUSH') {
+      this.d.addDanger(4);
+      this.d.sfxWhisper(2);
+      return;
+    }
+    // 画面内では絶対に動かさない
+    const pos = this.d.ghostPos();
+    if (this.d.isVisible(pos.x, pos.z, 1.5)) return;
+    this.d.wakeGhost(spot.x, spot.z);
   }
 
   // ---------------------------------------------------------------- //
@@ -670,6 +763,8 @@ export class Floor1Mode {
   /** 直前に触った / 達成したオブジェクト */
   private lastObject: string | null = null;
   private sinceObject = 999;
+  private lastRiskTier = 0;
+  private finalTaken = false;
 
   /** オブジェクトに関わる出来事があった */
   private touchedObject(id: string) {
@@ -679,6 +774,7 @@ export class Floor1Mode {
 
   private markEvent(kind: string) {
     this.sinceEvent = 0;
+    this.horror.markMeaningful();
     this.d.markEvent(kind);
   }
 
@@ -799,6 +895,14 @@ export class Floor1Mode {
     this.completed += 1;
     this.completedIds.add(a.def.id);
     if (a.def.object) this.touchedObject(a.def.object);
+    // 自分から危険を選んだ。世界はこれを見てから返事を決める
+    this.lastRiskTier = a.def.riskTier;
+    this.horror.markGreed(a.def.riskTier);
+    if (a.def.lastTemptation) this.finalTaken = true;
+    this.d.log(
+      'request_completed_event',
+      `requestId=${a.def.id} riskTier=${a.def.riskTier} object=${a.def.object ?? '-'}`,
+    );
     if (a.def.type !== 'hold') {
       this.d.addEarnings(reward);
       this.d.sfxCash();
@@ -994,11 +1098,9 @@ export class Floor1Mode {
       this.d.log('stream_goal_reached', `earnings=${Math.round(this.d.earnings())}`);
     }
 
-    // 何も起きない時間が続いたら、Requestではなく世界を動かす
-    if (this.sinceEvent > CONFIG.floor1.pacing.quietLimit && !this.active) {
-      this.sinceEvent = 0;
-      this.worldBeat();
-    }
+    // --- HorrorDirector。世界側の反応と「間」はこちらが決める ---
+    const fired = this.horror.update(dt, this.horrorContext());
+    if (fired) this.runHorror(fired);
 
     // 電話を鳴らす条件
     this.maybeRingPhone(dt);
@@ -1033,23 +1135,65 @@ export class Floor1Mode {
     this.d.log('subject_state_changed', 'subject=phone old=idle new=ringing');
   }
 
-  private worldBeat() {
-    const p = this.d.playerPos();
-    const roll = Math.random();
-    if (roll < 0.25) {
-      this.d.flickerLamp(p.x, p.z, 2.0);
-      this.d.sfxKnock(8);
-    } else if (roll < 0.5) {
-      this.d.sfxStep();
-      this.d.hint('FOOTSTEPS', 2);
-    } else if (roll < 0.7) {
-      this.d.sfxDoor(14);
-    } else if (roll < 0.9) {
-      this.maybeGhostStir();
-    } else {
-      this.d.sfxBell();
+
+  /** HorrorDirector へ渡す文脈 */
+  private horrorContext() {
+    const dists: Record<string, number> = {};
+    const rooms: Record<string, string> = {};
+    for (const o of FLOOR1_OBJECTS) {
+      dists[o.id] = this.objDistance(o.id);
+      rooms[o.id] = o.room;
     }
-    this.d.log('world_beat', 'quiet_limit');
+    dists.ghost = this.objDistance('ghost');
+    rooms.ghost = 'ldk';
+    const g = this.ghost === 'seated' ? SOFA : this.d.ghostPos();
+    return {
+      haunted: this.d.haunting(),
+      danger: this.d.danger(),
+      room: this.room(),
+      phase: this.phase(),
+      chaseActive: this.d.ghostChasing(),
+      ghostState: this.ghost,
+      ghostDistance: dists.ghost,
+      ghostOnScreen: this.d.isVisible(g.x, g.z, 1.3),
+      objectDistances: dists,
+      objectStates: this.objects.states(),
+      objectRoom: rooms,
+      memories: this.memory.all(),
+      memoryAge: this.memory.ages(),
+      focusObject: this.focusObject(),
+      activeRequestId: this.active?.def.id ?? null,
+      activeRequestType: this.active?.def.type ?? null,
+      lastRiskTier: this.lastRiskTier,
+      goalReached: this.goal,
+      returning: this.returningTime > 1.5 && this.d.distanceToEntrance() < 14,
+      finalTemptationTaken: this.finalTaken,
+    };
+  }
+
+  private phase(): RunPhase {
+    if (this.d.ghostChasing()) return 'CHASE';
+    if (this.returningTime > 1.5 && this.d.distanceToEntrance() < 14) return 'RETURNING';
+    if (this.goal) return 'OVERTIME';
+    if (this.elapsed < 35) return 'INTRO';
+    if (this.completed > 0 || this.lastObject) return 'ENGAGEMENT';
+    return 'EXPLORATION';
+  }
+
+  /** 今カメラを向けている対象 */
+  private focusObject(): string | null {
+    let best: string | null = null;
+    let bestC = 0.25;
+    for (const o of FLOOR1_OBJECTS) {
+      const c = this.d.centerOf(o.x, o.z, o.height);
+      if (c > bestC) {
+        bestC = c;
+        best = o.id;
+      }
+    }
+    const g = this.ghost === 'seated' ? SOFA : this.d.ghostPos();
+    if (this.d.centerOf(g.x, g.z, 1.3) > bestC) return 'ghost';
+    return best;
   }
 
   /** UIへ渡す */
@@ -1099,6 +1243,7 @@ export class Floor1Mode {
       candidates: this.director.lastCandidates.map((c) => `${c.def.id} ${c.score.toFixed(0)}`),
       rejected: this.director.lastRejections.slice(0, 6).map((r) => `${r.id}:${r.reason}`),
       memory: [...this.memory.all()],
+      horror: this.horror.debug(),
     };
   }
 
@@ -1130,6 +1275,7 @@ export class Floor1Mode {
       goal: this.goal,
       lastTemptation: this.lastTemptationDone,
       memory: [...this.memory.all()],
+      horror: this.horror.kpi(this.elapsed),
     };
   }
 }

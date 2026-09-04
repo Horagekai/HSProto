@@ -1,5 +1,4 @@
 import { CONFIG } from '../config';
-import { pick, randRange } from '../core/util';
 import type { Floor1Room } from '../world/floor1Level';
 import { FLOOR1_OBJECTS } from '../world/floor1Level';
 
@@ -769,13 +768,15 @@ export interface DelayedConsequence {
 
 export class WorldMemory {
   private set = new Set<string>();
-  private pending: DelayedConsequence[] = [];
+  private createdAt = new Map<string, number>();
+  private elapsed = 0;
 
-  onFire: ((c: DelayedConsequence) => void) | null = null;
+  onCreated: ((m: string) => void) | null = null;
 
   reset() {
     this.set.clear();
-    this.pending = [];
+    this.createdAt.clear();
+    this.elapsed = 0;
   }
 
   has(m: string) {
@@ -786,34 +787,27 @@ export class WorldMemory {
     return this.set;
   }
 
+  /** 記録されてからの秒数。忘れた頃ほど効かせるために使う */
+  ages(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [m, t] of this.createdAt) out[m] = this.elapsed - t;
+    return out;
+  }
+
   /**
-   * 記録する。同時に「後から効いてくる結果」を予約する。
-   * 狙いは、プレイヤーに『これ、さっき自分がやったせいでは？』と思わせること。
+   * 記録する。
+   * **ここでは何も発火させない。** Memory は即時トリガーではなく、
+   * 関連する恐怖イベントのスコアを上げるだけ（HorrorDirector が時機を選ぶ）。
    */
   remember(m: string) {
     if (this.set.has(m)) return;
     this.set.add(m);
-    const table: Record<string, string[]> = {
-      altar_overplayed: ['distant_bell', 'light_sway', 'portrait_tilt'],
-      phone_listened_long: ['distant_phone', 'own_voice', 'footstep_behind'],
-      bath_sip_2: ['water_running', 'drain', 'door_sound'],
-      portrait_restored: ['portrait_changed', 'distant_bell'],
-      ghost_selfie_taken: ['sofa_empty', 'footstep_behind'],
-      fridge_held_long: ['kitchen_noise', 'door_sound'],
-    };
-    const kinds = table[m];
-    if (!kinds) return;
-    this.pending.push({ memory: m, delay: randRange(25, 75), kind: pick(kinds) });
+    this.createdAt.set(m, this.elapsed);
+    this.onCreated?.(m);
   }
 
   update(dt: number) {
-    for (let i = this.pending.length - 1; i >= 0; i--) {
-      this.pending[i].delay -= dt;
-      if (this.pending[i].delay > 0) continue;
-      const c = this.pending[i];
-      this.pending.splice(i, 1);
-      this.onFire?.(c);
-    }
+    this.elapsed += dt;
   }
 }
 
