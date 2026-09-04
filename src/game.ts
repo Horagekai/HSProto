@@ -127,8 +127,14 @@ export class Game {
   private reactionFor: ActiveAnomaly | null = null;
   /** 目的地系リクエストの道中に仕込む異変のタイマー */
   private journeyEvents: number[] = [];
-  /** LIGHTS OFF リクエスト中はライトを消す */
-  private forcedLightsOff = false;
+  /**
+   * 配信カメラのライト。**プレイヤーが [F] で切れる。**
+   *
+   * 以前は LIGHTS OFF リクエスト中にゲームが勝手に消していたが、
+   * それだと「消せと言われても消し方が無い」状態だった。
+   * 自分で消すからこそ「自分から危険を作った」になる。
+   */
+  private lightOn = true;
   /** 人形を抱えているか */
   private carryingDoll = false;
   private inspectedNow: InspectType | null = null;
@@ -436,7 +442,7 @@ export class Game {
     this.reactionTimer = 0;
     this.reactionFor = null;
     this.journeyEvents = [];
-    this.forcedLightsOff = false;
+    this.lightOn = true;
     this.carryingDoll = false;
     this.deathTimer = 0;
     this.wasVisible = false;
@@ -549,8 +555,27 @@ export class Game {
       }
       store.setNow({ selfie: on });
     }
+    if (code === 'KeyF') this.toggleLight();
     // Dismiss は押しっぱなしなので、単発キーでは扱わない（updatePlaying 側で処理する）
   };
+
+  /**
+   * ライトを切る / 点ける。
+   *
+   * 消すと何も見えなくなるが、そのぶん撮れ高のRiskが上がる。
+   * 「消せ」と言われたときに自分で消す、という操作そのものが誘惑への回答になる。
+   */
+  private toggleLight() {
+    this.lightOn = !this.lightOn;
+    this.audio.shutter();
+    this.toast(this.lightOn ? 'LIGHT ON' : 'LIGHT OFF', 1.2);
+    if (!this.lightOn) {
+      this.chat.burst('danger', 2);
+      this.director.markEvent('monster_appear');
+      this.novelty.markRiskReignite();
+    }
+    this.logEvent('light_toggled', this.lightOn ? 'on' : 'off');
+  }
 
   /** [E] は状況で意味が変わる。入口 > 電話 > 調査 > 挑発 */
   private contextAction() {
@@ -703,7 +728,7 @@ export class Game {
       monsterState: this.monster.state,
       haunting: this.haunting.level,
       selfie: this.player.selfie,
-      lightsOff: this.forcedLightsOff,
+      lightsOff: !this.lightOn,
     });
 
     this.heyUsedNow = true;
@@ -920,9 +945,11 @@ export class Game {
     this.endRun(true);
   }
 
-  /** リクエストに紐づく一時効果を解除する */
+  /**
+   * リクエストに紐づく一時効果を解除する。
+   * ライトはここでは触らない。消したままにするかどうかはプレイヤーの判断。
+   */
   private clearRequestEffects() {
-    this.forcedLightsOff = false;
     this.journeyEvents = [];
   }
 
@@ -975,7 +1002,7 @@ export class Game {
 
     this.player.update(dt, this.input, this.level.grid, this.camera);
     // Selfie中はライトが自分の顔を焼くので落とす
-    this.flashlight.intensity = this.forcedLightsOff
+    this.flashlight.intensity = !this.lightOn
       ? 0
       : CONFIG.render.flashlightIntensity *
         (this.player.selfie ? CONFIG.render.selfieLightScale : 1);
@@ -1066,7 +1093,7 @@ export class Game {
       monsterState: this.monster.state,
       monsterBehavior: this.monster.behavior,
       selfieWithMonster: selfieMonsterInFrame,
-      lightsOff: this.forcedLightsOff,
+      lightsOff: !this.lightOn,
       sinceHey: this.sinceHey,
       chasing: this.monster.chasing,
       backTurnedNear: !this.framing.visible && this.distance < 10 && this.monster.discovered,
@@ -1588,7 +1615,7 @@ export class Game {
       heyUsedNow: this.heyUsedNow,
       heyStreak: this.hey.streak,
       monsterLookingAtPlayer: this.monster.isLookingBecauseCalled,
-      lightsOff: this.forcedLightsOff,
+      lightsOff: !this.lightOn,
       dollDistance: (() => {
         const d = this.nearestPoint('doll');
         return d ? this.pointDistance(d) : 999;
@@ -1615,7 +1642,9 @@ export class Game {
         );
       }
     }
-    if (r.kind === 'lights_off') this.forcedLightsOff = true;
+    if (r.kind === 'lights_off' || r.kind === 'hey_lights_off') {
+      if (this.lightOn) this.hint('[F] KILL YOUR LIGHT', 4);
+    }
     if (r.temptation) {
       this.temptation = {
         time: this.elapsed,
@@ -2047,7 +2076,7 @@ export class Game {
       leaving: this.leaving,
       selfie: this.player.selfie,
       mouseHint: this.mouseHintTimer > 0,
-      lightsOff: this.forcedLightsOff,
+      lightsOff: !this.lightOn,
       carrying: this.carryingDoll,
       playerPos: { x: this.player.position.x, z: this.player.position.z },
       dismissHold: this.dismissHold / CONFIG.request.dismiss.holdTime,

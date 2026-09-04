@@ -11,6 +11,7 @@ const CONTROLS: Array<[string, string]> = [
   ['SHIFT', 'RUN'],
   ['Q', 'HEY! — CALL OUT TO IT'],
   ['C', 'SELFIE MODE'],
+  ['F', 'LIGHT ON / OFF'],
   ['E', 'INSPECT / ANSWER / LEAVE'],
   ['X (hold)', 'DISMISS REQUEST (NO ACCEPT BUTTON)'],
   ['P', 'DEBUG PANEL'],

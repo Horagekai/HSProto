@@ -202,7 +202,7 @@ export const DEFS: Record<RequestKind, Def> = {
     // 「目的地まで消したまま歩く」だと、道中に他の出来事が重なって
     // 何を要求されているのか分からなくなっていた。純粋な時間制約にした（§6 / §7）
     title: 'LIGHTS OFF',
-    desc: 'KILL THE LIGHT AND WAIT',
+    desc: '[F] KILL THE LIGHT AND WAIT',
     reward: 5000,
     risk: 'high',
     time: 22,
@@ -329,7 +329,7 @@ export const DEFS: Record<RequestKind, Def> = {
   },
   hey_lights_off: {
     title: 'CALL IT WITH THE LIGHT OFF',
-    desc: 'LIGHTS OFF, THEN [Q]',
+    desc: '[F] LIGHT OFF, THEN [Q]',
     reward: 6000,
     risk: 'extreme',
     time: 25,
@@ -546,7 +546,7 @@ export type DirectorState =
 function surfaceFor(kind: RequestKind, ctx: RequestContext): { title: string; desc: string } | null {
   const call = kind === 'hey_call' || kind === 'hey_again' || kind === 'one_more_shot';
   if (!call) return null;
-  if (ctx.lightsOff) return { title: 'CALL IT IN THE DARK', desc: 'LIGHTS ARE OFF.  [Q]' };
+  if (ctx.lightsOff) return { title: 'CALL IT IN THE DARK', desc: 'YOUR LIGHT IS OFF.  [Q]' };
   if (ctx.selfieActive) return { title: 'CALL IT WHILE SMILING', desc: 'STAY IN SELFIE.  [Q]' };
   if (!ctx.monsterVisible && ctx.monsterKnown) {
     return { title: 'CALL IT BACK', desc: "YOU LOST IT. BRING IT BACK.  [Q]" };
