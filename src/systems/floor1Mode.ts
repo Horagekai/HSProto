@@ -57,6 +57,7 @@ export interface Floor1Deps {
   restorePortrait: () => void;
   setFridgeOpen: (open: boolean) => void;
   setGhostSeatVisible: (v: boolean) => void;
+  ghostSeatPosture: () => void;
   /** 幽霊を立たせて動かし始める */
   wakeGhost: (x: number, z: number) => void;
   ghostPos: () => THREE.Vector3;
@@ -421,7 +422,10 @@ export class Floor1Mode {
     this.d.addHaunting(this.bathSips >= 2 ? 7 : 4);
     this.d.addDanger(this.bathSips >= 2 ? 6 : 3);
     this.memory.remember(`bath_sip_${this.bathSips}`);
-    if (this.bathSips >= 2) this.memory.remember('bath_overdone');
+    if (this.bathSips >= 2) {
+      this.memory.remember('bath_overdone');
+      this.horror.addIntent('bath_sip_2');
+    }
     this.d.log('bath_sip', `count=${this.bathSips}`);
     // 咳き込む
     window.setTimeout(() => this.d.hint('YOU COUGH', 1.6), 900);
@@ -500,8 +504,14 @@ export class Floor1Mode {
     if (!a || a.def.type !== 'hold') return;
     this.holdDurations.push({ id: a.def.id, seconds: Math.round(a.hold * 10) / 10, tier: a.tier });
     this.d.log('hold_released', `request=${a.def.id} total_duration=${a.hold.toFixed(1)} highest_tier=${a.tier} reason=${reason}`);
-    if (a.def.object === 'altar' && a.hold >= 5) this.memory.remember('altar_overplayed');
-    if (a.def.object === 'phone' && a.hold >= 5) this.memory.remember('phone_listened_long');
+    if (a.def.object === 'altar' && a.hold >= 5) {
+      this.memory.remember('altar_overplayed');
+      this.horror.addIntent('altar_overplayed');
+    }
+    if (a.def.object === 'phone' && a.hold >= 5) {
+      this.memory.remember('phone_listened_long');
+      this.horror.addIntent('phone_listened_long');
+    }
     if (a.def.object === 'fridge' && a.hold >= 5) this.memory.remember('fridge_held_long');
     if (a.def.object === 'phone') {
       this.objects.setState('phone', 'idle');
@@ -774,6 +784,49 @@ export class Floor1Mode {
         break;
       case 'GhostStand':
         this.requestGhost('STAND', SOFA);
+        break;
+      // ---- Safe Suspense Peak。強い演出だが危険は増やさない ----
+      case 'PortraitCrash':
+        this.objects.setState('portraits', 'fallen');
+        this.d.dropPortrait();
+        this.d.sfxKnock(2);
+        this.d.footage('THE PORTRAITS CAME DOWN', 3);
+        this.d.hint('THE PORTRAITS CAME DOWN', 3);
+        this.d.addHaunting(2);
+        break;
+      case 'PhoneSuddenRing':
+        this.objects.setState('phone', 'ringing');
+        this.d.sfxPhone(this.objDistance('phone'));
+        this.d.footage('THE PHONE IS RINGING', 3);
+        this.d.hint('THE PHONE. RIGHT NOW.', 3);
+        break;
+      case 'WholeHouseLightDrop':
+        this.d.flickerLamp(p.x, p.z, 5.5);
+        this.d.sfxDoor(3);
+        this.d.footage('THE WHOLE HOUSE WENT DARK', 3);
+        this.d.hint('EVERY LIGHT AT ONCE', 3);
+        break;
+      case 'TVSuddenOn':
+        this.objects.setState('tv', 'on');
+        this.d.sfxWhisper(6);
+        this.d.footage('THE TV TURNED ITSELF ON', 3);
+        this.d.hint('THE TV IS ON', 2.8);
+        break;
+      case 'BathroomDoorMove':
+        this.d.sfxDoor(6);
+        this.d.footage('THE BATHROOM DOOR MOVED', 3);
+        this.d.hint('THE DOOR IS CLOSING BY ITSELF', 3);
+        break;
+      case 'HallwaySilhouetteCross':
+        // 横切るだけ。追ってこない
+        this.requestGhost('CROSS', behind);
+        this.d.footage('SOMETHING CROSSED THE HALL', 3);
+        this.d.hint('IT CROSSED AND KEPT GOING', 3);
+        break;
+      case 'SofaPostureChange':
+        this.d.ghostSeatPosture();
+        this.d.footage('IT IS SITTING DIFFERENTLY', 3);
+        this.d.hint('THAT IS NOT HOW IT WAS SITTING', 3);
         break;
       case 'FakeRush':
         this.requestGhost('FAKE_RUSH', behind);
@@ -1084,7 +1137,10 @@ export class Floor1Mode {
           if (done) {
             this.ghostSelfies += 1;
             this.memory.remember('ghost_selfie_taken');
-            if (def.id === 'ghost_selfie_close') this.memory.remember('ghost_close_selfie');
+            if (def.id === 'ghost_selfie_close') {
+              this.memory.remember('ghost_close_selfie');
+              this.horror.addIntent('ghost_close_selfie');
+            }
             this.d.log('ghost_selfie', `count=${this.ghostSelfies} distance=${this.objDistance('ghost').toFixed(1)}`);
           }
           break;
@@ -1400,6 +1456,27 @@ export class Floor1Mode {
     this.offer(def);
     this.d.log('debug_force', `FORCE_LAST_TEMPTATION id=${def.id}`);
     return true;
+  }
+
+  /**
+   * 重要な Greed を実ゲーム上で起こす（§78 の C/D/E を実プレイで確かめるため）。
+   * ボットは風呂の2口目や至近距離セルフィーまで自然には到達しにくい。
+   */
+  forceGreed(kind: 'bath_sip_2' | 'altar_overplayed' | 'phone_listened_long' | 'ghost_close_selfie') {
+    if (kind === 'bath_sip_2') {
+      this.bathSips = 2;
+      this.memory.remember('bath_sip_1');
+      this.memory.remember('bath_sip_2');
+      this.memory.remember('bath_overdone');
+    } else if (kind === 'ghost_close_selfie') {
+      this.memory.remember('ghost_selfie_taken');
+      this.memory.remember('ghost_close_selfie');
+    } else {
+      this.memory.remember(kind);
+    }
+    this.horror.addIntent(kind);
+    this.horror.markGreed(4);
+    this.d.log('debug_force', `FORCE_GREED ${kind}`);
   }
 
   /** 提示中のリクエストを即完了させる（Last Temptation を「乗った」ことにする） */

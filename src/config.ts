@@ -610,17 +610,64 @@ export const CONFIG = {
      * ここが速すぎると Tension が常に底に張り付き、
      * 弱いイベントが延々と選ばれ続けて「波」が消える（実測でRunの95%がT<20だった）。
      */
-    tensionDecay: 1.1,
+    /**
+     * Tension Envelope。
+     * 状況から DesiredTension を出し、ActualTension がゆっくり追従する。
+     * KPI のために下限を持ち上げるようなことはしない。中間帯は状況要因から自然に出す。
+     */
+    envelope: {
+      riseSpeed: 0.55,
+      fallSpeed: 0.14,
+      /** 未解決が重なったときの2件目以降の効き */
+      stackFalloff: 0.45,
+      unresolvedCap: 46,
+      anticipationDecay: 1.1,
+      residueDecay: 1.6,
+      /** 返事が返ったら結果待ちはこの割合まで下がる */
+      answeredRelief: 0.35,
+      /** 危険度が低い出来事は、驚いても尾を引かない */
+      threatFactor: { safe: 0.5, low: 0.75, medium: 1.0, high: 1.2, lethal: 1.4 } as Record<string, number>,
+      constraint: 16,
+      hold: 12,
+      pendingRequired: 14,
+      intentWeight: 12,
+      intentCap: 20,
+    },
     /** これを超えたら「飽和」。強いイベントのスコアを大きく下げる */
     saturatedTension: 72,
     /** これ未満のスコアの候補は捨てる。低いと弱いイベントが常時ばら撒かれる */
     minScore: 34,
     /** ここを超えると「気のせい」系は後ろに下がる。世界が反応していないように見せない */
     ambientFadeHaunted: 50,
-    /** ここを超えて荒れているのに山が来ないなら、強いイベントを押し出す */
-    climaxHaunted: 55,
-    climaxDrought: 70,
+    /**
+     * 危険度ごとの解禁 Haunted。
+     * 「強い演出」と「実際の危険」を分けたので、安全な山は最初から出せる。
+     */
+    threatUnlock: { safe: 0, low: 8, medium: 30, high: 55, lethal: 75 } as Record<string, number>,
+    /** 未回収の因果（Consequence Intent） */
+    intent: {
+      urgencyWeight: 62,
+      /** 現場と別の部屋で返す方が効く */
+      otherRoom: 20,
+      farInRoom: 10,
+      returning: 14,
+      /** latest を過ぎてから諦めるまで */
+      graceAfterLatest: 18,
+    },
+    /** 印象に残る山。Haunted は山の質を決めるが、山の有無は決めない */
+    peak: {
+      /** この秒数を過ぎると PeakNeed が上がり始め、後ろで 1.0 になる */
+      /** これより前に山は出さない */
+      notBefore: 55,
+      window: [45, 110] as [number, number],
+      needWeight: 34,
+      /** Run 序盤に山を出さない。ここを過ぎても一度も無ければ強く押す */
+      firstAfter: 70,
+      firstBonus: 26,
+      maxPerRun: 4,
+    },
     ambientFadePerPoint: 0.5,
+    ambientFadeMax: 13,
     /** Pressure が高いときだけ最低スコアを上げる。全体一律では上げない */
     minScoreHigh: 55,
     minScoreSaturated: 72,

@@ -1,4 +1,4 @@
-# Horror Director v1.1
+# Horror Director v1.2
 
 [`src/systems/horrorDirector.ts`](src/systems/horrorDirector.ts) /
 [`src/systems/horrorEvents.ts`](src/systems/horrorEvents.ts)
@@ -374,3 +374,181 @@ Run E（欲張り）の終盤が §52 の狙い通りになっている。
 
 Ghost が続くのではなく、World Memory の結果（SofaEmpty / OwnVoice / DistantPhone）が
 間に挟まっている。
+
+---
+
+# v1.2 — Safe Suspense Peak / Tension Envelope / Consequence Intent
+
+v1.1 の 5Run で出た3点。どれも定数調整では直らず、モデルを1段変えている。
+
+```text
+安全寄りの Run は強イベント 0〜1件   → 強い演出 = 高 Haunted = 高危険 が暗黙の前提だった
+Tension < 20 が Run の 75〜100%       → Tension が緊張ではなく RecentShock だった
+bath_sip_2 が5Run中1回しか返らない   → スコア加点は保証ではなかった
+```
+
+## 20. Intensity と Threat を分ける
+
+```text
+Intensity  演出としての強さ   subtle / minor / medium / strong / climax
+Threat     実際の危険度       safe / low / medium / high / lethal
+```
+
+危険度ごとに解禁 Haunted を持つ。**安全な山は最初から出せる。**
+
+```text
+safe 0 / low 8 / medium 30 / high 55 / lethal 75
+```
+
+これで「危険なことをしていないのに危険になった」を作らずに、山だけ出せる。
+
+## 21. Safe Suspense Peak
+
+| Event | Intensity | Threat | 内容 |
+| --- | --- | --- | --- |
+| PortraitCrash | strong | safe | 遺影が大きな音で落ちる |
+| PhoneSuddenRing | strong | safe | 電話が突然鳴る |
+| WholeHouseLightDrop | strong | safe | 家全体の照明が一瞬落ちる |
+| TVSuddenOn | strong | safe | TVが突然つく |
+| BathroomDoorMove | strong | safe | 風呂のドアが勝手に動く |
+| HallwaySilhouetteCross | strong | low | 廊下奥を人影が横切る。追ってこない |
+| SofaPostureChange | strong | low | 座ったまま姿勢だけ変わる |
+
+選択条件:
+
+```text
+Run 開始 55秒以内は出さない
+PeakNeed = 最後の山からの秒数（45秒で上がり始め、110秒で 1.0）→ スコア +34 まで
+70秒経っても一度も山が無ければ +26
+1Run 4回を超えると -40
+ThreatFit = 12 - |haunted/25 - threatRank| x 7
+```
+
+最後の項が §12。Haunted は**山の有無ではなく山の質**を決める。
+低 Haunted なら「廊下を横切って、そのまま行った」、
+高 Haunted なら同じ枠が `FakeRush` になる。
+
+## 22. Tension Envelope
+
+v1.1 までは `イベント → +20 → 毎秒減衰`。これは緊張ではなく RecentShock で、
+音そのものは1秒でも「さっきの足音なんだった？」が10秒続くことを表現できていなかった。
+
+```text
+DesiredTension = PhaseBaseline + UnresolvedThreat + Anticipation
+               + GhostAwareness + Constraint + PendingConsequence + Residue
+
+ActualTension += (Desired - Actual) x speed x dt
+                 speed = 0.55（上がるとき） / 0.14（下がるとき）
+```
+
+| 成分 | 値 |
+| --- | --- |
+| PhaseBaseline | INTRO 10 / EXPLORATION 15 / ENGAGEMENT 25 / OVERTIME 35 / RETURNING 40 / CHASE 85 |
+| UnresolvedThreat | 出来事ごとに subtle 6(9秒) 〜 climax 45(34秒)。重なると2件目以降は 0.45 倍。上限46 |
+| Anticipation | 危険な行動の結果待ち。返事が返ると 0.35 倍に落ちる |
+| GhostAwareness | seated 0 / aware 8 / standing 15 / stalking 25 / chasing 50 |
+| Constraint | 制約中 16 / HOLD 中 12 |
+| PendingConsequence | 未回収の因果。required 14、その他は urgency x 12（上限20） |
+| Residue | 直後の余韻。strong 22、毎秒 1.6 で消える |
+
+危険度が低い出来事は尾を引かない（`threatFactor` safe 0.5 / low 0.75 / medium 1.0 / high 1.2）。
+遺影が落ちるのは驚くが「落ちた」で説明がつく。
+
+**下限を持ち上げるようなことはしていない。** 中間帯は状況要因から出ている。
+
+## 23. Consequence Intent
+
+```text
+World Memory      = 世界が覚えていること
+ConsequenceIntent = Director がいつか返事をしたい、未回収の因果
+```
+
+[`src/systems/consequenceIntent.ts`](src/systems/consequenceIntent.ts)
+
+| source | 候補 | earliest / preferred / latest |
+| --- | --- | --- |
+| bath_sip_2 | WaterRunning / DistantWaterDrop / PipeKnock / BathroomDoorMove / MirrorAnomaly | 8 / 15-45 / 70 |
+| altar_overplayed | DistantBell / PortraitTilt / LightCordSway / PortraitCrash | 8 / 15-45 / 75 |
+| phone_listened_long | DistantPhone / OwnVoice / PhoneClick / BehindFootstep / PhoneSuddenRing | 8 / 15-50 / 80 |
+| ghost_close_selfie | SofaEmpty / GhostReposition / GhostCrossing / GhostPeek / BehindFootstep | 6 / 12-40 / 70 |
+| LAST_TEMPTATION | Meaningful なもの全部 | 2 / 2-5 / 6・required |
+
+即イベントではない。風呂を出て、別の部屋へ移って、緊張が落ちた頃に返す。
+
+```text
+IntentBonus = urgency x 62
+            + 別の部屋なら +20 / 同室でも遠ければ +10
+            + RETURNING なら +14
+```
+
+`latest` を過ぎたら fallback を1つだけ返す。fallback は Haunted 条件を見ない
+（見ると「低 Haunted だから返事なし」になる）が、画面内テレポートのような
+破ってはいけない条件は確認する。それも無理なら +18秒で `expired`。
+
+## 24. Debug / Log
+
+```text
+Tension              42 → 58 (desired)
+Tension内訳          phase 25 / unresolvedThreat 18 / ghostAwareness 15 / residue 4
+Peak Need            0.62  [PortraitCrash(safe), HallwaySilhouetteCross(low)]
+Consequence Intents  bath_sip_2 age=28s u=0.65
+```
+
+```text
+consequence_intent_created / _resolved / _expired
+tension trace（30秒ごとに desired と actual）
+```
+
+## 25. 検証
+
+不変条件 10/10（5回連続実行して 0 失敗）、シナリオ 9/9。
+
+```text
+PASS  A Safe: 低Hauntedの語彙        unique=21 families=11
+PASS  B Greedy: 密度制御             avgGap=17.3s short(<6s)=0/24
+PASS  C Ghost-heavy: Ghost連発なし   ghost=11/24 (46%) within10s=0
+PASS  D 枯渇: Ghostで埋めない        events=6/90s ghost=3 silence=84%
+PASS  E LastTemptation: 必ず返事     30/30 avgLatency=2.7s unique=9
+PASS  C bath_sip_2 の返事            100% (20/20) lat=20.7s unique=5
+PASS  D phone_listened_long の返事   100% (20/20) lat=21.9s unique=4
+PASS  E ghost_close_selfie の返事    100% (20/20) lat=18.0s unique=4
+PASS  F Safe Run: 山はあるが危険にならない  peaks=5 dangerous=0
+```
+
+実ゲーム上の Consequence（`forceGreed` で Greed だけ起こし、あとは通常進行）:
+
+```text
+bath_sip_2           8/8 (100%) lat=15.9s  [PipeKnock, WaterRunning]
+altar_overplayed     8/8 (100%) lat=20.9s  [PortraitCrash, DistantBell]
+phone_listened_long  8/8 (100%) lat=23.0s  [DistantPhone, PhoneClick, PhoneSuddenRing]
+ghost_close_selfie   8/8 (100%) lat=70.5s  [BehindFootstep]
+```
+
+## 26. 5Run 実測（v1.1 → v1.2）
+
+| | v1.1 | v1.2 |
+| --- | --- | --- |
+| 安全 Run の山 | 0〜1件 | 3件（すべて threat safe/low） |
+| Tension < 20 | 9〜18% | 9〜20% |
+| Tension 40〜70 | 測定なし | 34〜58% |
+| Tension 70+ | 0〜35% | 2〜21% |
+| 系統多様性 | 8〜13 | 11〜13 |
+| 平均間隔 | 10.0〜13.1s | 12.1〜14.0s |
+
+Tension 推移（tourist / greedy）:
+
+```text
+tourist  0 → 16 → 27 → 36 → 27 → 42 → 52
+greedy   0 → 16 → 54 → 55 → 36 → 54 → 47 → 47 → 66 → 52 → 67 → 61 → 81 → 68
+```
+
+Run の大部分が「平時か Chase か」の二択ではなくなっている。
+
+実際に出た Consequence（ボットが自然に Greed した2Run）:
+
+```text
+curious  216.5s created source=bath_sip_2 preferred=15-45 latest=70
+         240.8s resolved source=bath_sip_2 event=WaterRunning latency=24.3s
+greedy   356.6s created source=phone_listened_long preferred=15-50 latest=80
+         376.8s resolved source=phone_listened_long event=DistantPhone latency=20.3s
+```

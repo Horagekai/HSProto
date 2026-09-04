@@ -456,6 +456,13 @@ export class Game {
       setGhostSeatVisible: (v: boolean) => {
         if (this.f1Level) this.f1Level.ghostSeat.visible = v;
       },
+      // 座ったまま、向きだけ変わる。攻撃はしてこない
+      ghostSeatPosture: () => {
+        const g = this.f1Level?.ghostSeat;
+        if (!g) return;
+        g.rotation.y = Math.PI / 2 + (Math.random() < 0.5 ? -0.9 : 0.9);
+        g.position.x += Math.random() < 0.5 ? -0.25 : 0.25;
+      },
       wakeGhost: (x: number, z: number) => {
         this.monster.frozen = false;
         this.monster.group.visible = true;

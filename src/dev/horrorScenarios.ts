@@ -185,5 +185,81 @@ export function runScenarios(): ScenarioResult[] {
     );
   }
 
+  // ---- Consequence Intent: 重要な Greed に返事が返るか ----
+  const intentScenario = (
+    label: string,
+    source: string,
+    setup: Partial<HorrorContext>,
+    trials = 20,
+  ) => {
+    let resolved = 0;
+    const picked: string[] = [];
+    const lats: number[] = [];
+    for (let n = 0; n < trials; n++) {
+      const d = new HorrorDirector(FLOOR1_HORROR);
+      d.reset();
+      // Greed するまでの助走
+      simulate(d, 60, ctxOf(setup));
+      d.addIntent(source);
+      d.markGreed(4);
+      // 現場を離れて別の部屋へ移動した想定で回す
+      const after = ctxOf({ ...setup, room: 'hallway' });
+      const dt = 1 / 30;
+      const before = d.intentResolved;
+      const firedBefore = d.kpi(1).sequence.length;
+      for (let i = 0; i < 100 * 30 && d.intentResolved === before; i++) d.update(dt, after);
+      if (d.intentResolved > before) {
+        resolved += 1;
+        const seq = d.kpi(1).sequence;
+        const line = d.intentLog.find((l) => l.kind === 'consequence_intent_resolved');
+        const m = line?.detail.match(/event=(\w+)/);
+        picked.push(m ? m[1] : seq[firedBefore] ?? '?');
+        const lm = line?.detail.match(/latency=([\d.]+)/);
+        if (lm) lats.push(parseFloat(lm[1]));
+      }
+    }
+    const rate = Math.round((resolved / trials) * 100);
+    const avgLat = lats.length ? lats.reduce((a, b) => a + b, 0) / lats.length : 0;
+    add(
+      label,
+      rate >= 60,
+      `resolved=${rate}% (${resolved}/${trials}) avgLatency=${avgLat.toFixed(1)}s unique=${new Set(picked).size} [${[...new Set(picked)].join(',')}]`,
+    );
+  };
+
+  intentScenario('C bath_sip_2 の返事', 'bath_sip_2', {
+    haunted: 45,
+    room: 'bath',
+    memories: new Set(['bath_sip_2']),
+    memoryAge: { bath_sip_2: 0 },
+  });
+  intentScenario('D phone_listened_long の返事', 'phone_listened_long', {
+    haunted: 50,
+    room: 'hallway',
+    memories: new Set(['phone_listened_long']),
+    memoryAge: { phone_listened_long: 0 },
+  });
+  intentScenario('E ghost_close_selfie の返事', 'ghost_close_selfie', {
+    haunted: 70,
+    room: 'ldk',
+    ghostState: 'standing',
+    memories: new Set(['ghost_selfie_taken', 'ghost_close_selfie']),
+    memoryAge: { ghost_selfie_taken: 0, ghost_close_selfie: 0 },
+  });
+
+  // ---- F: Safe Run に山があり、危険は増えていないか ----
+  {
+    const d = new HorrorDirector(FLOOR1_HORROR);
+    d.reset();
+    const shots = simulate(d, 300, ctxOf({ haunted: 20, danger: 5, ghostState: 'seated' }));
+    const k = d.kpi(300);
+    const dangerous = d.peaks.filter((p) => p.threat === 'high' || p.threat === 'lethal');
+    add(
+      'F Safe Run: 山はあるが危険にならない',
+      k.peaks >= 1 && dangerous.length === 0,
+      `peaks=${k.peaks} [${k.peakList.join(', ')}] dangerous=${dangerous.length} events=${shots.length}`,
+    );
+  }
+
   return out;
 }

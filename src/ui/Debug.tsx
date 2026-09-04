@@ -57,7 +57,22 @@ export function DebugPanel() {
           <Row k="Rejected" v={s.f1Debug.rejected.join(' ') || '-'} />
           <Row k="Memory" v={s.f1Debug.memory.join(' ') || '-'} />
           <div className="debug-head">HORROR DIRECTOR</div>
-          <Row k="Estimated Tension" v={String(s.f1Debug.horror.tension)} />
+          <Row
+            k="Tension"
+            v={`${s.f1Debug.horror.tension} → ${s.f1Debug.horror.desired} (desired)`}
+          />
+          <Row
+            k="Tension内訳"
+            v={Object.entries(s.f1Debug.horror.components)
+              .filter(([, v]) => v > 0.5)
+              .map(([k, v]) => `${k} ${Math.round(v)}`)
+              .join(' / ') || '-'}
+          />
+          <Row
+            k="Peak Need"
+            v={`${s.f1Debug.horror.peakNeed}  [${s.f1Debug.horror.peaks.join(', ') || '山なし'}]`}
+          />
+          <Row k="Consequence Intents" v={s.f1Debug.horror.intents.join(' / ') || '-'} />
           <Row k="Pacing Need" v={s.f1Debug.horror.pacing.toFixed(2)} />
           <Row k="Last Horror" v={`${s.f1Debug.horror.sinceHorror.toFixed(1)}s ago`} />
           <Row k="Last Strong" v={`${s.f1Debug.horror.sinceStrong.toFixed(1)}s ago`} />

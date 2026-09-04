@@ -580,6 +580,7 @@ src/
     floor1Mode.ts        FLOOR 1 の本体（Discovery / HOLD / World Memory / Ghost）
     horrorDirector.ts    世界側の恐怖と「間」を決める Pacing Director
     horrorEvents.ts      恐怖イベントの定義（データのみ）
+    consequenceIntent.ts Director が後で返事をしたい未回収の因果
     audio.ts             WebAudio合成音
     logger.ts            プレイログとKPI集計
   ui/

@@ -1,4 +1,10 @@
 import { CONFIG } from '../config';
+import {
+  INTENT_SPECS,
+  createIntent,
+  urgency,
+  type ConsequenceIntent,
+} from './consequenceIntent';
 
 /**
  * HorrorDirector。
@@ -41,6 +47,14 @@ export type SoundSource = 'ahead' | 'side' | 'behind' | 'same_room' | 'distant_r
 
 export type HorrorIntensity = 'subtle' | 'minor' | 'medium' | 'strong' | 'climax';
 
+/**
+ * プレイヤーに対する実際の危険度。Intensity（演出の強さ）とは別軸。
+ *
+ * v1.1 までは「強い演出 = 高 Haunted = 高危険」が暗黙の前提になっていて、
+ * 安全に遊ぶプレイヤーには山が一度も来なかった。ここを分ける。
+ */
+export type HorrorThreat = 'safe' | 'low' | 'medium' | 'high' | 'lethal';
+
 export type RunPhase =
   | 'INTRO'
   | 'EXPLORATION'
@@ -56,6 +70,8 @@ export interface HorrorEventDef {
   id: string;
   family: HorrorFamily;
   intensity: HorrorIntensity;
+  /** 危険度。省略時は intensity から推測せず 'low' 扱い */
+  threat?: HorrorThreat;
   baseWeight: number;
 
   minHaunted?: number;
@@ -91,6 +107,11 @@ export interface HorrorEventDef {
   anticipationDelay?: [number, number];
   /** Ghost へ出す行動要求 */
   ghostAction?: GhostAction;
+  /**
+   * この出来事が「まだ解決していない」状態として何秒残るか。
+   * 音そのものは1秒でも「さっきの足音なんだった？」は10秒続く。省略時は intensity から。
+   */
+  unresolvedFor?: number;
   /** 音の出どころ候補。毎回同じ方向から鳴らさない */
   sources?: SoundSource[];
   /** 同じイベントでも聞こえ方を変えるための variant 数 */
@@ -165,6 +186,14 @@ export const NOTHING: HorrorEventDef = {
 
 const GHOST_FAMILIES = new Set<HorrorFamily>(['GHOST_VISUAL', 'GHOST_SPATIAL', 'FAKE_THREAT', 'CHASE']);
 
+const THREAT_RANK: Record<HorrorThreat, number> = {
+  safe: 0,
+  low: 1,
+  medium: 2,
+  high: 3,
+  lethal: 4,
+};
+
 const INTENSITY_RANK: Record<HorrorIntensity, number> = {
   subtle: 0,
   minor: 1,
@@ -182,22 +211,70 @@ const PRESSURE_GAIN: Record<HorrorIntensity, number> = {
   climax: 22,
 };
 
-/** イベントごとの Tension 加算 */
-const TENSION_GAIN: Record<HorrorIntensity, number> = {
-  subtle: 6,
-  minor: 12,
-  medium: 20,
-  strong: 34,
-  climax: 62,
+/**
+ * 出来事が残す「未解決の何かがいる」の強さと、その持続時間。
+ *
+ * v1.1 までは Tension = イベントで +20 して毎秒減衰、だった。
+ * これは緊張ではなく RecentShock で、Run の 75〜100% が T<20 になっていた。
+ * ここでは出来事そのものではなく、出来事が残す状態を持つ。
+ */
+const UNRESOLVED: Record<HorrorIntensity, { amount: number; seconds: number }> = {
+  subtle: { amount: 6, seconds: 9 },
+  minor: { amount: 12, seconds: 14 },
+  medium: { amount: 20, seconds: 20 },
+  strong: { amount: 30, seconds: 28 },
+  climax: { amount: 45, seconds: 34 },
+};
+
+/** 出来事の直後だけ乗る余韻。数秒〜十数秒で消える */
+const RESIDUE: Record<HorrorIntensity, number> = {
+  subtle: 4,
+  minor: 8,
+  medium: 14,
+  strong: 22,
+  climax: 34,
+};
+
+const PHASE_BASELINE: Record<RunPhase, number> = {
+  INTRO: 10,
+  EXPLORATION: 15,
+  ENGAGEMENT: 25,
+  OVERTIME: 35,
+  RETURNING: 40,
+  CHASE: 85,
+};
+
+const GHOST_AWARENESS: Record<string, number> = {
+  seated: 0,
+  aware: 8,
+  standing: 15,
+  stalking: 25,
+  chasing: 50,
 };
 
 export class HorrorDirector {
-  /** 今この瞬間、演出としてどれくらい圧迫しているかの推定値 0..100 */
+  /**
+   * 実際の緊張度 0..100。DesiredTension へゆっくり追従する。
+   * 上がるのは比較的速く、下がるのは遅い（安全になっても余韻が残る）。
+   */
   tension = 0;
+  /** 状況から計算した「本来こうあるべき」緊張度 */
+  desired = 0;
+  /** DesiredTension の内訳（デバッグ表示用） */
+  lastComponents: Record<string, number> = {};
+  /** まだ解決していない出来事 */
+  private unresolved: Array<{ amount: number; until: number; source: string }> = [];
+  /** 危険な行動をした直後の、結果待ち */
+  private anticipationTension = 0;
+  /** 強い出来事の直後の余韻 */
+  private residue = 0;
   elapsed = 0;
 
   private sinceHorror = 999;
   private sinceStrong = 999;
+  /** 最後に「印象的な山」が起きてからの秒数 */
+  private sincePeak = 0;
+  peaks: Array<{ id: string; threat: HorrorThreat; at: number }> = [];
   private sinceMeaningful = 0;
   /** 大きな出来事のあとの「間」 */
   private relief = 0;
@@ -232,9 +309,27 @@ export class HorrorDirector {
   pendingFailReasons: Array<{ source: string; elapsed: number; rejections: string[] }> = [];
   pendingLog: Array<{ at: number; kind: string; detail: string }> = [];
 
+  /** 未回収の因果。World Memory とは別で、Director が返事をしたいもの */
+  intents: ConsequenceIntent[] = [];
+  intentLog: Array<{ at: number; kind: string; detail: string }> = [];
+  intentCreated = 0;
+  intentResolved = 0;
+  intentExpired = 0;
+  private intentLatency: number[] = [];
+  /** 未回収が溜まっているぶんの緊張 */
+  get intentPressure() {
+    const live = this.intents.filter((i) => !i.resolved && this.elapsed >= i.earliest);
+    if (!live.length) return 0;
+    return Math.min(
+      CONFIG.horror.envelope.intentCap,
+      live.reduce((a, i) => a + urgency(i, this.elapsed) * CONFIG.horror.envelope.intentWeight, 0),
+    );
+  }
   /** 直近の評価で Nothing 以外の候補が何件あったか */
   private scarcity = 9;
   private lastCtx: HorrorContext | null = null;
+  /** 期限切れ間際の Intent が指定した強制発火 */
+  private forced: HorrorEventDef | null = null;
   /** 直前に実際に鳴らしたイベントの強さ */
   private lastFiredRank = -1;
   lastCandidates: Candidate[] = [];
@@ -255,14 +350,25 @@ export class HorrorDirector {
   private pressureHighTime = 0;
   private tensionHighTime = 0;
   private tensionLowTime = 0;
+  /** <20 / 20-40 / 40-70 / 70-85 / 85+ の滞在時間 */
+  private bandTime = [0, 0, 0, 0, 0];
+  /** 30秒ごとの Tension。推移をそのまま報告できるようにする */
+  trace: Array<{ at: number; desired: number; actual: number }> = [];
+  private traceTimer = 0;
 
   constructor(private pool: HorrorEventDef[]) {}
 
   reset() {
     this.tension = 0;
+    this.desired = 0;
+    this.unresolved = [];
+    this.anticipationTension = 0;
+    this.residue = 0;
     this.elapsed = 0;
     this.sinceHorror = 999;
     this.sinceStrong = 999;
+    this.sincePeak = 0;
+    this.peaks = [];
     this.sinceMeaningful = 0;
     this.relief = 0;
     this.anticipation = 0;
@@ -284,6 +390,12 @@ export class HorrorDirector {
     this.pendingCreatedAt = 0;
     this.pendingFailReasons = [];
     this.pendingLog = [];
+    this.intents = [];
+    this.intentLog = [];
+    this.intentCreated = 0;
+    this.intentResolved = 0;
+    this.intentExpired = 0;
+    this.intentLatency = [];
     this.lastResolvedBy = null;
     this.pressureSum = 0;
     this.pressureSamples = 0;
@@ -302,6 +414,9 @@ export class HorrorDirector {
     this.evaluations = 0;
     this.tensionHighTime = 0;
     this.tensionLowTime = 0;
+    this.bandTime = [0, 0, 0, 0, 0];
+    this.trace = [];
+    this.traceTimer = 0;
   }
 
   /** 意味のある出来事があった（発見・リクエスト・異変・幽霊の反応） */
@@ -312,15 +427,119 @@ export class HorrorDirector {
   /** プレイヤーが自分から危険な行動をした。少し緊張を上げ、無関係なイベントを抑える */
   markGreed(riskTier: number) {
     const cfg = CONFIG.horror;
-    this.tension = clamp(this.tension + (cfg.greedTension[riskTier - 1] ?? 3), 0, 100);
+    // 「+20して減衰」ではなく「結果待ちの状態」を作る。何か返ってくるまで落ち着かない
+    this.anticipationTension = Math.max(
+      this.anticipationTension,
+      cfg.greedTension[riskTier - 1] ?? 3,
+    );
     this.anticipation = rand(cfg.anticipation.min, cfg.anticipation.max);
     this.sinceMeaningful = 0;
+  }
+
+  /** まだ説明のついていない出来事を積む */
+  private addUnresolved(source: string, amount: number, seconds: number) {
+    this.unresolved.push({ amount, until: this.elapsed + seconds, source });
+  }
+
+  /** DesiredTension の内訳。デバッグにそのまま出す */
+  tensionComponents(ctx: HorrorContext) {
+    const cfg = CONFIG.horror.envelope;
+    this.unresolved = this.unresolved.filter((u) => u.until > this.elapsed);
+    // 未解決が重なっても青天井にしない。一番強いものを主、残りを従とする
+    const sorted = [...this.unresolved].sort((a, b) => b.amount - a.amount);
+    let threat = 0;
+    sorted.forEach((u, i) => {
+      // 時間が経つほど薄れる
+      const life = Math.max(0, u.until - this.elapsed);
+      const fade = Math.min(1, life / 6);
+      threat += u.amount * fade * (i === 0 ? 1 : cfg.stackFalloff ** i);
+    });
+    const constraint =
+      ctx.activeRequestType === 'constraint'
+        ? cfg.constraint
+        : ctx.activeRequestType === 'hold'
+          ? cfg.hold
+          : 0;
+    return {
+      phase: PHASE_BASELINE[ctx.phase] ?? 15,
+      unresolvedThreat: Math.min(cfg.unresolvedCap, threat),
+      anticipation: this.anticipationTension,
+      ghostAwareness: GHOST_AWARENESS[ctx.ghostState] ?? 0,
+      constraint,
+      pending: this.pending2?.required ? cfg.pendingRequired : this.intentPressure,
+      residue: this.residue,
+    };
   }
 
   /**
    * 最後の誘惑に自分から乗った。**必ず意味のある返事を返す。**
    * スコア加点だけでは保証にならないので、予約として持つ。
    */
+  /**
+   * 重要な Greed に対して「あとで返事をしたい」を作る（§30-34）。
+   * 即イベントではない。風呂を出て、別の部屋へ移って、緊張が落ちた頃に返す。
+   */
+  addIntent(source: string, contextTags?: string[]) {
+    const spec = INTENT_SPECS[source];
+    if (!spec) return;
+    if (this.intents.some((i) => i.source === source && !i.resolved)) return;
+    const intent = createIntent(source, this.elapsed, spec);
+    if (contextTags) intent.contextTags = contextTags;
+    this.intents.push(intent);
+    this.intentCreated += 1;
+    this.intentLog.push({
+      at: Math.round(this.elapsed * 10) / 10,
+      kind: 'consequence_intent_created',
+      detail:
+        `source=${source} required=${intent.required} earliest=${spec.earliest} ` +
+        `preferred=${spec.preferred[0]}-${spec.preferred[1]} latest=${spec.latest}`,
+    });
+  }
+
+  /** その Intent が今この候補にどれだけ乗るか。乗らないなら 0 */
+  private intentBonus(def: HorrorEventDef, ctx: HorrorContext, tags: string[]) {
+    let best = 0;
+    for (const i of this.intents) {
+      if (i.resolved || i.required) continue;
+      if (this.elapsed < i.earliest) continue;
+      if (!i.candidates.includes(def.id)) continue;
+      const u = urgency(i, this.elapsed);
+      let b = u * CONFIG.horror.intent.urgencyWeight;
+      // 現場から離れた場所で返す方が「まだ続いている」感が出る（§50）
+      if (i.sourceObject) {
+        const room = ctx.objectRoom[i.sourceObject];
+        const dist = ctx.objectDistances[i.sourceObject] ?? 0;
+        if (room && room !== ctx.room) b += CONFIG.horror.intent.otherRoom;
+        else if (dist > 12) b += CONFIG.horror.intent.farInRoom;
+      }
+      if (ctx.phase === 'RETURNING') b += CONFIG.horror.intent.returning;
+      if (b > best) {
+        best = b;
+        tags.push(`intent:${i.source}+${b.toFixed(0)}`);
+      }
+    }
+    return best;
+  }
+
+  /** 発火したイベントが、どれかの Intent への返事になっていたら回収する */
+  private consumeIntent(def: HorrorEventDef) {
+    for (const i of this.intents) {
+      if (i.resolved || i.required) continue;
+      if (this.elapsed < i.earliest) continue;
+      if (!i.candidates.includes(def.id)) continue;
+      i.resolved = true;
+      this.intentResolved += 1;
+      const latency = this.elapsed - i.createdAt;
+      this.intentLatency.push(latency);
+      this.intentLog.push({
+        at: Math.round(this.elapsed * 10) / 10,
+        kind: 'consequence_intent_resolved',
+        detail: `source=${i.source} event=${def.id} latency=${latency.toFixed(1)}s`,
+      });
+      return;
+    }
+  }
+
   requireConsequence(source: string, contextTags: string[], relatedObject?: string) {
     const cfg = CONFIG.horror.pendingConsequence;
     this.pending2 = {
@@ -409,6 +628,60 @@ export class HorrorDirector {
     return this.commit(def, this.lastCtx!);
   }
 
+  /**
+   * Intent の期限管理。
+   * latest を過ぎたら、まず fallback を1つだけ返して、それも無理なら expired にする。
+   * 永遠に残しておくと、Run 終盤に古い因果がまとめて返ってきて不自然になる。
+   */
+  private updateIntents(ctx: HorrorContext) {
+    for (const i of this.intents) {
+      if (i.resolved || i.required) continue;
+      if (this.elapsed < i.latest) continue;
+      // Chase 中に無理やり返さない（§45）
+      if (ctx.chaseActive) continue;
+      // §33。保険なので Haunted 条件は見ない。見ると「低 Haunted だから返事なし」になる。
+      // 画面内テレポート等の破ってはいけない条件だけ確認する。
+      const fb = i.fallback
+        .map((id) => this.pool.find((d) => d.id === id))
+        .find((d) => !!d && !this.hardBlocked(d, ctx));
+      if (fb && !this.gate(ctx)) {
+        i.resolved = true;
+        this.intentResolved += 1;
+        this.intentLatency.push(this.elapsed - i.createdAt);
+        this.intentLog.push({
+          at: Math.round(this.elapsed * 10) / 10,
+          kind: 'consequence_intent_resolved',
+          detail: `source=${i.source} event=${fb.id} latency=${(this.elapsed - i.createdAt).toFixed(1)}s fallback=true`,
+        });
+        this.forced = fb;
+        return;
+      }
+      if (this.elapsed > i.latest + CONFIG.horror.intent.graceAfterLatest) {
+        i.resolved = true;
+        this.intentExpired += 1;
+        this.intentLog.push({
+          at: Math.round(this.elapsed * 10) / 10,
+          kind: 'consequence_intent_expired',
+          detail:
+            `source=${i.source} reason=no_eligible_candidate ` +
+            `rejections=${this.lastRejections.slice(0, 4).map((r) => r.id + ':' + r.reason).join('|')}`,
+        });
+      }
+    }
+  }
+
+  /** 破ってはいけない条件だけ。Haunted や Tension のような「今ふさわしいか」は見ない */
+  private hardBlocked(def: HorrorEventDef, ctx: HorrorContext) {
+    if (def.requiresGhostOffscreen && ctx.ghostOnScreen) return true;
+    if (def.requiresGhostOnscreen && !ctx.ghostOnScreen) return true;
+    if (def.requiredGhostState && !def.requiredGhostState.includes(ctx.ghostState)) return true;
+    if (def.requiredMemories && !def.requiredMemories.every((m) => ctx.memories.has(m))) return true;
+    const last = this.lastAt.get(def.id);
+    if (last !== undefined && this.elapsed - last < def.cooldown) return true;
+    if (def.oncePerRun && (this.counts.get(def.id) ?? 0) > 0) return true;
+    return false;
+  }
+
   /** テスト用。maxPerRun を使い切った状態を作る */
   debugExhaust(ids: string[]) {
     for (const id of ids) {
@@ -420,11 +693,13 @@ export class HorrorDirector {
   /** Chase が始まった / 終わった */
   markChase(started: boolean) {
     if (started) {
-      this.tension = clamp(this.tension + TENSION_GAIN.climax, 0, 100);
+      this.addUnresolved('chase', 45, 30);
+      this.residue = RESIDUE.climax;
       this.relief = 0;
     } else {
-      // 逃げ切った、と思わせる時間を長めに取る
+      // 逃げ切った、と思わせる時間を長めに取る。ただし緊張は即座には落ちない
       this.relief = rand(CONFIG.horror.relief.chase[0], CONFIG.horror.relief.chase[1]);
+      this.addUnresolved('chase_ended', 22, 40);
     }
   }
 
@@ -470,6 +745,21 @@ export class HorrorDirector {
     return Math.min(1, 0.9 + (t - 35) / 30 * 0.1);
   }
 
+  /**
+   * 0..1。最近「印象に残る山」が無いほど大きい。
+   * HorrorPressure（最近イベントが多すぎるか）とは別物で、
+   * Ambient が沢山鳴っていて Pressure は高いのに PeakNeed も高い、が同時に起こりうる。
+   *
+   * これは固定タイマーのトリガーではなく、スコア加点にしか使わない。
+   */
+  get peakNeed() {
+    const t = this.sincePeak;
+    const [a, b] = CONFIG.horror.peak.window;
+    if (t < a) return 0;
+    if (t > b) return 1;
+    return (t - a) / (b - a);
+  }
+
   get phaseTargetTension(): [number, number] {
     return [20, 60];
   }
@@ -501,6 +791,10 @@ export class HorrorDirector {
     if (def.oncePerRun && n > 0) return 'once_per_run';
     if (def.maxPerRun !== undefined && n >= def.maxPerRun) return 'max_per_run';
 
+    // 危険な出来事は、プレイヤーが自分で世界を悪くした場合にだけ起きる。
+    // 安全に遊んだのに危険になった、を作らない。
+    const threat = def.threat ?? 'low';
+    if (ctx.haunted < CONFIG.horror.threatUnlock[threat]) return 'threat_locked';
     if (def.minHaunted !== undefined && ctx.haunted < def.minHaunted) return 'haunted_low';
     if (def.maxHaunted !== undefined && ctx.haunted > def.maxHaunted) return 'haunted_high';
     if (def.allowedPhases && !def.allowedPhases.includes(ctx.phase)) return 'phase';
@@ -539,6 +833,8 @@ export class HorrorDirector {
     // 強いイベントが続かないようにする
     const rank = INTENSITY_RANK[def.intensity];
     if (rank >= 3) {
+      // 開幕すぐに山を持ってこない。まず家に慣れさせる
+      if (this.elapsed < CONFIG.horror.peak.notBefore) return 'too_early_for_peak';
       // 間が空いていても、強い出来事が2つ並ぶと山が山でなくなる
       if (this.lastFiredRank >= 3) return 'strong_after_strong';
       this.strongTimes = this.strongTimes.filter((t) => this.elapsed - t < CONFIG.horror.strongWindow);
@@ -589,7 +885,11 @@ export class HorrorDirector {
     // 家が荒れているのに「気のせい」ばかり返すと、世界が反応していないように見える。
     // 低 Haunted 用の語彙は、高 Haunted では自然と後ろに下がる。
     if (rank === 0 && ctx.haunted > CONFIG.horror.ambientFadeHaunted && !def.requiredMemories?.length) {
-      const p = (ctx.haunted - CONFIG.horror.ambientFadeHaunted) * CONFIG.horror.ambientFadePerPoint;
+      // 完全には消さない。高 Haunted でも Ghost の間に環境イベントを挟みたい（§53）
+      const p = Math.min(
+        CONFIG.horror.ambientFadeMax,
+        (ctx.haunted - CONFIG.horror.ambientFadeHaunted) * CONFIG.horror.ambientFadePerPoint,
+      );
       s -= p;
       tags.push(`ambientFade-${p.toFixed(0)}`);
     }
@@ -606,12 +906,29 @@ export class HorrorDirector {
       s += b;
     }
 
-    // 家が十分に荒れているのに山が一度も来ない、を避ける。
-    // 「退屈だから強いものを出す」ではなく「高 Haunted なのに山が無い」ときだけ効かせる。
-    if (rank >= 3 && ctx.haunted > CONFIG.horror.climaxHaunted && this.sinceStrong > CONFIG.horror.climaxDrought) {
-      const b = Math.min(30, (this.sinceStrong - CONFIG.horror.climaxDrought) * 0.4);
+    // 山が長く来ていないなら、強い出来事を押し出す。
+    // Haunted は「どれくらい危険な山か」を決めるだけで、山そのものの有無は決めない。
+    if (rank >= 3) {
+      const b = this.peakNeed * CONFIG.horror.peak.needWeight;
       s += b;
-      tags.push(`climaxDue+${b.toFixed(0)}`);
+      if (b > 1) tags.push(`peakNeed+${b.toFixed(0)}`);
+      // 一度も山が無いまま Run が進むのが最悪なので、初回だけ強く押す
+      if (!this.peaks.length && this.elapsed > CONFIG.horror.peak.firstAfter) {
+        s += CONFIG.horror.peak.firstBonus;
+        tags.push(`firstPeak+${CONFIG.horror.peak.firstBonus}`);
+      }
+      // 1Run に山を出しすぎない
+      if (this.peaks.length >= CONFIG.horror.peak.maxPerRun) {
+        s -= 40;
+        tags.push('peakBudget-40');
+      }
+      // §12。Haunted は山の有無ではなく「山の質」を決める。
+      // 荒れているほど、同じ山でも危険な方を選ぶ。
+      const tr = THREAT_RANK[def.threat ?? 'low'];
+      const want = ctx.haunted / 25;
+      const fit = 12 - Math.abs(want - tr) * 7;
+      s += fit;
+      tags.push(`threatFit${fit >= 0 ? '+' : ''}${fit.toFixed(0)}`);
     }
 
     // --- 今どこを見ているか ---
@@ -648,6 +965,10 @@ export class HorrorDirector {
       s += bonus;
       tags.push(`memory+${bonus.toFixed(0)}`);
     }
+
+    // --- 未回収の因果。自分がやったことへの返事 ---
+    const ib = this.intentBonus(def, ctx, tags);
+    if (ib) s += ib;
 
     // --- 帰路はWorld Memoryを強く ---
     if (ctx.phase === 'RETURNING' && def.requiredMemories?.length) {
@@ -765,8 +1086,10 @@ export class HorrorDirector {
       s += b;
       tags.push(`recent+${b.toFixed(0)}`);
     }
-    // 何も起きていない時間が長いほど、黙り続ける理由は減る
-    const b = this.dryness * 46;
+    // 何も起きていない時間が長いほど、黙り続ける理由は減る。
+    // ただし既に緊張しているなら、静けさは退屈ではなく「まだ来ていない」なので効かせない。
+    const calm = 1 - clamp((this.tension - 60) / 40, 0, 1) * 0.75;
+    const b = this.dryness * 46 * calm;
     s -= b;
     if (b > 0) tags.push(`dry-${b.toFixed(0)}`);
     // Director が最近たくさん出していれば、黙る理由になる
@@ -806,19 +1129,47 @@ export class HorrorDirector {
     this.elapsed += dt;
     this.sinceHorror += dt;
     this.sinceStrong += dt;
+    this.sincePeak += dt;
     this.sinceMeaningful += dt;
     this.relief = Math.max(0, this.relief - dt);
     this.anticipation = Math.max(0, this.anticipation - dt);
-    this.tension = clamp(this.tension - CONFIG.horror.tensionDecay * dt, 0, 100);
+    // --- Tension Envelope ---
+    const env = CONFIG.horror.envelope;
+    this.anticipationTension = Math.max(0, this.anticipationTension - env.anticipationDecay * dt);
+    this.residue = Math.max(0, this.residue - env.residueDecay * dt);
+    const c = this.tensionComponents(ctx);
+    this.lastComponents = c;
+    this.desired = clamp(
+      c.phase + c.unresolvedThreat + c.anticipation + c.ghostAwareness + c.constraint + c.pending + c.residue,
+      0,
+      100,
+    );
+    // 上がるのは速く、下がるのは遅い。安全になっても即座に0へ戻らない
+    const speed = this.desired > this.tension ? env.riseSpeed : env.fallSpeed;
+    this.tension = clamp(this.tension + (this.desired - this.tension) * speed * dt, 0, 100);
+
     const pcfg = CONFIG.horror.pressure;
     // 指数減衰。Pressure が「直近の刺激密度」そのものを表すようにする
     this.pressure = clamp(this.pressure - this.pressure * pcfg.decay * dt, 0, pcfg.max);
     if (this.tension > 80) this.tensionHighTime += dt;
     if (this.tension < 20) this.tensionLowTime += dt;
+    const bi = this.tension < 20 ? 0 : this.tension < 40 ? 1 : this.tension < 70 ? 2 : this.tension < 85 ? 3 : 4;
+    this.bandTime[bi] += dt;
+    this.traceTimer -= dt;
+    if (this.traceTimer <= 0) {
+      this.traceTimer = 30;
+      this.trace.push({
+        at: Math.round(this.elapsed),
+        desired: Math.round(this.desired),
+        actual: Math.round(this.tension),
+      });
+    }
     this.pressureSum += this.pressure * dt;
     this.pressureSamples += dt;
     this.pressureMax = Math.max(this.pressureMax, this.pressure);
     if (this.pressure >= pcfg.bands[1]) this.pressureHighTime += dt;
+
+    this.updateIntents(ctx);
 
     // 返事の期限。ここを過ぎたら失敗として必ず記録する
     if (this.pending2 && this.elapsed > this.pending2.latest + 1.5) {
@@ -829,6 +1180,12 @@ export class HorrorDirector {
         rejections: this.lastRejections.slice(0, 6).map((r) => r.id + ':' + r.reason),
       });
       this.pending2 = null;
+    }
+
+    if (this.forced) {
+      const def = this.forced;
+      this.forced = null;
+      return this.commit(def, ctx);
     }
 
     // 予約されたイベント
@@ -937,7 +1294,18 @@ export class HorrorDirector {
     if (this.recentFamilies.length > 4) this.recentFamilies.shift();
 
     this.lastFiredRank = rank;
-    this.tension = clamp(this.tension + TENSION_GAIN[def.intensity], 0, 100);
+    if (rank >= 3) {
+      this.sincePeak = 0;
+      this.peaks.push({ id: def.id, threat: def.threat ?? 'low', at: Math.round(this.elapsed * 10) / 10 });
+    }
+    // 出来事そのものではなく、出来事が残す「まだ解決していない」を積む
+    const u = UNRESOLVED[def.intensity];
+    // 遺影が落ちるのは驚くが「落ちた」で説明がつく。危険度が低いほど尾を引かない
+    const tf = CONFIG.horror.envelope.threatFactor[def.threat ?? 'low'];
+    this.addUnresolved(def.id, u.amount * tf, (def.unresolvedFor ?? u.seconds) * tf);
+    this.residue = Math.max(this.residue, RESIDUE[def.intensity]);
+    // 自分の行動への返事が返ったので、結果待ちは解消する
+    this.anticipationTension *= CONFIG.horror.envelope.answeredRelief;
     // Director 自身の出力密度。Ghost 系は体感が重いので上乗せする
     const pcfg = CONFIG.horror.pressure;
     let gain = PRESSURE_GAIN[def.intensity];
@@ -957,6 +1325,7 @@ export class HorrorDirector {
     ft.push(this.elapsed);
     this.familyTimes.set(def.family, ft);
     if (def.family.startsWith('AMBIENT')) this.ambientFired.push(def.id);
+    this.consumeIntent(def);
     this.sinceHorror = 0;
     this.sinceMeaningful = 0;
     if (rank >= 3) {
@@ -983,12 +1352,19 @@ export class HorrorDirector {
   debug() {
     return {
       tension: Math.round(this.tension),
+      desired: Math.round(this.desired),
+      components: this.lastComponents,
       pacing: Math.round(this.dryness * 100) / 100,
       sinceHorror: Math.round(this.sinceHorror * 10) / 10,
       sinceStrong: Math.round(this.sinceStrong * 10) / 10,
       relief: Math.round(this.relief * 10) / 10,
       anticipation: Math.round(this.anticipation * 10) / 10,
       pressure: Math.round(this.pressure * 10) / 10,
+      peakNeed: Math.round(this.peakNeed * 100) / 100,
+      intents: this.intents
+        .filter((i) => !i.resolved)
+        .map((i) => `${i.source} age=${(this.elapsed - i.createdAt).toFixed(0)}s u=${urgency(i, this.elapsed).toFixed(2)}`),
+      peaks: this.peaks.map((p) => `${p.id}(${p.threat})`),
       pressureBand: this.pressureBand,
       ghost30s: this.ghostCount(30),
       events30s: this.fired.filter((f) => this.elapsed - f.at < 30).length,
@@ -1043,8 +1419,21 @@ export class HorrorDirector {
       avgPressure: this.pressureSamples ? Math.round((this.pressureSum / this.pressureSamples) * 10) / 10 : 0,
       maxPressure: Math.round(this.pressureMax * 10) / 10,
       pressureHighShare: runTime ? Math.round((this.pressureHighTime / runTime) * 100) : 0,
+      peaks: this.peaks.length,
+      safePeaks: this.peaks.filter((p) => p.threat === 'safe' || p.threat === 'low').length,
+      peakList: this.peaks.map((p) => `${p.at}s ${p.id}[${p.threat}]`),
       ambientUnique: new Set(this.ambientFired).size,
       ambientFamilies: ambientFamilies.size,
+      intentCreated: this.intentCreated,
+      intentResolved: this.intentResolved,
+      intentExpired: this.intentExpired,
+      intentRate: this.intentCreated
+        ? Math.round((this.intentResolved / this.intentCreated) * 100)
+        : 0,
+      intentLatency: this.intentLatency.length
+        ? Math.round(avg(this.intentLatency) * 10) / 10
+        : 0,
+      intentEvents: this.intentLog.map((l) => `${l.at}s ${l.kind.replace('consequence_intent_', '')} ${l.detail}`),
       pendingCreated: this.pendingResolved + this.pendingFailed + (this.pending2 ? 1 : 0),
       pendingResolved: this.pendingResolved,
       pendingFailed: this.pendingFailed,
@@ -1061,6 +1450,8 @@ export class HorrorDirector {
         : 0,
       tensionHighShare: runTime ? Math.round((this.tensionHighTime / runTime) * 100) : 0,
       tensionLowShare: runTime ? Math.round((this.tensionLowTime / runTime) * 100) : 0,
+      tensionBands: this.bandTime.map((t) => (runTime ? Math.round((t / runTime) * 100) : 0)),
+      tensionTrace: this.trace,
       strongAfterStrong,
       sequence: this.fired.map((f) => f.id),
     };

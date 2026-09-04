@@ -183,9 +183,11 @@ export function runHorrorTests(): TestResult[] {
   // 9. 高Tensionで強いイベントのスコアが下がる
   {
     // 評価は一定間隔でしか走らないので、候補が出るまで少し回す
-    const evaluate = (d: HorrorDirector) => {
-      for (let i = 0; i < 90 && d.lastAllCandidates.length === 0; i++) {
-        d.update(1 / 30, baseCtx({ haunted: 100 }));
+    // 前の評価結果が残っていると、そのときの Tension でのスコアを見てしまう
+    const evaluate = (d: HorrorDirector, ctx = baseCtx({ haunted: 100 })) => {
+      d.lastAllCandidates = [];
+      for (let i = 0; i < 600 && d.lastAllCandidates.length === 0; i++) {
+        d.update(1 / 30, ctx);
       }
       return d.lastAllCandidates;
     };
@@ -193,10 +195,14 @@ export function runHorrorTests(): TestResult[] {
     low.reset();
     const lowScores = evaluate(low);
 
+    // Tension Envelope では「+20 して減衰」ではなく状況から緊張が決まるので、
+    // 追われている状況を作って上げる
     const high = new HorrorDirector(FLOOR1_HORROR);
     high.reset();
-    for (let i = 0; i < 8; i++) high.markGreed(5);
-    const highScores = evaluate(high);
+    high.markChase(true);
+    const tense = baseCtx({ haunted: 100, ghostState: 'stalking', phase: 'OVERTIME' });
+    for (let i = 0; i < 8 * 30; i++) high.update(1 / 30, tense);
+    const highScores = evaluate(high, tense);
 
     const pickStrong = (cs: typeof lowScores) =>
       cs.find((c) => c.def.intensity === 'strong' || c.def.intensity === 'medium');

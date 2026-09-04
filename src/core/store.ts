@@ -196,6 +196,11 @@ export interface Snapshot {
     memory: string[];
     horror: {
       tension: number;
+      desired: number;
+      components: Record<string, number>;
+      peakNeed: number;
+      peaks: string[];
+      intents: string[];
       pacing: number;
       sinceHorror: number;
       sinceStrong: number;
