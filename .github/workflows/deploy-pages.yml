@@ -35,8 +35,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      # enablement: true にしておくと、Settings > Pages を手で開かなくても
+      # 初回実行時に Pages（Source = GitHub Actions）が有効化される
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
