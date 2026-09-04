@@ -65,7 +65,22 @@ export type LogEvent =
   | 'one_last_call_payoff'
   | 'request_dismissed'
   | 'constraint_completed'
-  | 'light_toggled';
+  | 'light_toggled'
+  // --- HS FLOOR 1 MODE ---
+  | 'room_entered'
+  | 'discovery_found'
+  | 'object_interacted'
+  | 'bath_sip'
+  | 'ghost_selfie'
+  | 'hold_started'
+  | 'hold_tier_reached'
+  | 'hold_released'
+  | 'request_candidate_generated'
+  | 'request_candidate_rejected'
+  | 'request_selected'
+  | 'object_became_eligible'
+  | 'delayed_consequence'
+  | 'world_beat';
 
 export interface LogRow {
   /** どちらの検証モードか（§38） */
@@ -249,6 +264,8 @@ export class Logger {
   oneGhost: Record<string, number> | null = null;
   /** Novelty / Request Director v2 のKPI */
   economy: Record<string, number> | null = null;
+  /** HS FLOOR 1 MODE のKPI */
+  floor1: Record<string, number> | null = null;
   mode: GameMode = 'standard';
 
   /** 検証用の集計。Turn-back Rate / Cash-out Rate / Greed Death Rate の素材 */
@@ -301,6 +318,7 @@ export class Logger {
       tempo: this.tempo,
       one_ghost: this.oneGhost,
       economy: this.economy,
+      floor1: this.floor1,
       request_ignore_viewer_penalty: CONFIG.request.ignorePenalty.viewerMult,
       mirror_interactions: this.rows
         .filter((r) => r.event === 'mirror_interacted')

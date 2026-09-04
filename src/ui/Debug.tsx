@@ -47,6 +47,17 @@ export function DebugPanel() {
       <Row k="Discoveries" v={String(s.discoveries)} />
       <Row k="Leaving" v={s.leaving ? 'YES' : 'no'} />
       <Row k="Player" v={`${s.playerPos.x.toFixed(1)}, ${s.playerPos.z.toFixed(1)}`} />
+      {s.f1Debug && (
+        <>
+          <div className="debug-head">FLOOR 1</div>
+          <Row k="Room" v={s.f1Debug.room} />
+          <Row k="Ghost" v={s.f1Debug.ghost} />
+          <Row k="Director" v={s.f1Debug.director} />
+          <Row k="Candidates" v={s.f1Debug.candidates.join(' / ') || '-'} />
+          <Row k="Rejected" v={s.f1Debug.rejected.join(' ') || '-'} />
+          <Row k="Memory" v={s.f1Debug.memory.join(' ') || '-'} />
+        </>
+      )}
       <Row k="FPS" v={String(s.fps)} />
     </div>
   );

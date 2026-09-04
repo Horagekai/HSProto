@@ -1027,3 +1027,18 @@ body,
   height: 2px;
   background: rgba(255, 255, 255, 0.75);
 }
+
+
+/* 3モード並べるとき */
+.modes-3 {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.modes-3 .mode {
+  padding: 14px 12px 12px;
+}
+
+.modes-3 .mode-name {
+  font-size: 14px;
+}

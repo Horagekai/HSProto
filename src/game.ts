@@ -5,6 +5,14 @@ import { store, type Phase } from './core/store';
 import { clamp01, formatNumber, randRange } from './core/util';
 import { buildLevel, MONSTER_ANCHORS, PEEK_ANCHORS, type InspectPoint, type Level } from './world/level';
 import { buildGhostLevel, GHOST_MONSTER_ANCHORS, GHOST_PEEK_ANCHORS } from './world/ghostLevel';
+import {
+  buildFloor1Level,
+  FLOOR1_OBJECTS,
+  FLOOR1_GHOST_ANCHORS,
+  FLOOR1_PEEK_ANCHORS,
+  type Floor1Level,
+} from './world/floor1Level';
+import { Floor1Mode } from './systems/floor1Mode';
 import { Player } from './world/player';
 import { Monster } from './world/monster';
 import { computeFraming, type Framing } from './systems/framing';
@@ -171,6 +179,18 @@ export class Game {
   private get ghost() {
     return this.mode === 'one_ghost';
   }
+
+  /** HS FLOOR 1 MODE か */
+  private get floor1() {
+    return this.mode === 'floor1';
+  }
+
+  /** HS FLOOR 1 MODE の本体。他モードでは触らない */
+  private f1: Floor1Mode | null = null;
+  private f1Level: Floor1Level | null = null;
+  /** 直前フレームの位置と向き（DON'T MOVE / TURN AROUND の判定用） */
+  private lastPos = { x: 0, z: 0 };
+  private turnAnchor = 0;
 
   private fpsAccum = 0;
   private fpsFrames = 0;
@@ -388,20 +408,105 @@ export class Game {
 
   // --- ライフサイクル ---
 
+
+  /** HS FLOOR 1 MODE から世界へ触るための口 */
+  private floor1Deps() {
+    return {
+      playerPos: () => this.player.position,
+      playerForward: () => ({ x: this.player.forward.x, z: this.player.forward.z }),
+      selfie: () => this.player.selfie,
+      lightOn: () => this.lightOn,
+      isVisible: (x: number, z: number, h: number) => this.isVisible(x, z, h),
+      centerOf: (x: number, z: number, h: number) => {
+        this._probe.set(x, h, z);
+        const f = this.frameOf(this._probe);
+        return f.visible ? f.center : 0;
+      },
+
+      addLikes: (n: number) => this.stream.addLikes(n),
+      addEarnings: (y: number) => this.stream.addEarnings(y),
+      spikeViewers: (f: number) => this.stream.spikeViewers(f),
+      addBoost: (a: number, d: number) => this.stream.addBoost(a, d),
+      addHaunting: (n: number) => this.haunting.add(n),
+      haunting: () => this.haunting.level,
+      addDanger: (n: number) => this.monster.addDanger(n),
+      danger: () => this.monster.danger,
+      earnings: () => this.stream.earnings,
+
+      toast: (t: string, d: number) => this.toast(t, d),
+      footage: (t: string, d: number) => this.footage(t, d),
+      hint: (t: string, d: number) => this.hint(t, d),
+      chat: (c: string, n: number) => this.chat.burst(c as ChatCategory, n),
+      chatLine: (t: string) => this.chat.push(t, true),
+
+      sfxBell: () => this.audio.chatBlip(),
+      sfxPhone: (d: number) => this.audio.phoneRing(d),
+      sfxKnock: (d: number) => this.audio.knock(d),
+      sfxWhisper: (d: number) => this.audio.whisper(d),
+      sfxDoor: (d: number) => this.audio.doorSlam(d),
+      sfxCash: () => this.audio.cash(),
+      sfxShutter: () => this.audio.shutter(),
+      sfxSpike: () => this.audio.viewerSpike(),
+      sfxStep: () => this.audio.footstep(false),
+
+      flickerLamp: (x: number, z: number, d: number) => this.level.flickerLamp(x, z, d),
+      dropPortrait: () => this.f1Level?.dropPortrait(),
+      restorePortrait: () => this.f1Level?.restorePortrait(),
+      setFridgeOpen: (o: boolean) => this.f1Level?.setFridgeOpen(o),
+      setGhostSeatVisible: (v: boolean) => {
+        if (this.f1Level) this.f1Level.ghostSeat.visible = v;
+      },
+      wakeGhost: (x: number, z: number) => {
+        this.monster.frozen = false;
+        this.monster.group.visible = true;
+        this.monster.position.set(x, 0, z);
+        this.monster.group.position.copy(this.monster.position);
+        if (this.f1Level) this.f1Level.ghostSeat.visible = false;
+      },
+      ghostPos: () => this.monster.position,
+      ghostChasing: () => this.monster.chasing,
+
+      markEvent: (kind: string) => this.director.markEvent(kind as never),
+      markDecision: () => this.director.markDecision('request'),
+      log: (event: string, detail: string) =>
+        this.logger.event(event as Parameters<Logger['event']>[0], this.logRow(), detail),
+      distanceToEntrance: () => this.distanceToEntrance(),
+    };
+  }
+
   /**
    * モードごとの設定を各システムへ配る。通常モードの数値には触れない。
    * ステージ自体が違うので、必要なら建て直す。
    */
   private applyMode() {
     const ghost = this.ghost;
+    const f1 = this.mode === 'floor1';
     if (this.levelMode !== this.mode) {
       this.levelMode = this.mode;
       this.level.dispose();
-      this.level = ghost ? buildGhostLevel(this.scene) : buildLevel(this.scene);
+      this.f1Level = null;
+      if (f1) {
+        const lv = buildFloor1Level(this.scene);
+        this.f1Level = lv;
+        this.level = lv;
+      } else {
+        this.level = ghost ? buildGhostLevel(this.scene) : buildLevel(this.scene);
+      }
       this.anomalies.setLevel(this.level);
     }
-    this.monster.anchors = ghost ? GHOST_MONSTER_ANCHORS : MONSTER_ANCHORS;
-    this.monster.peekAnchors = ghost ? GHOST_PEEK_ANCHORS : PEEK_ANCHORS;
+    this.monster.anchors = f1
+      ? FLOOR1_GHOST_ANCHORS
+      : ghost
+        ? GHOST_MONSTER_ANCHORS
+        : MONSTER_ANCHORS;
+    this.monster.peekAnchors = f1
+      ? FLOOR1_PEEK_ANCHORS
+      : ghost
+        ? GHOST_PEEK_ANCHORS
+        : PEEK_ANCHORS;
+    if (f1 && !this.f1) this.f1 = new Floor1Mode(this.floor1Deps());
+    // 環境怪異とNoveltyは FLOOR 1 では専用システムが受け持つ
+    if (f1) this.anomalies.autoSpawn = false;
     this.monster.oneGhost = ghost;
     this.monster.thresholds = ghost ? CONFIG.oneGhost.thresholds : CONFIG.danger.thresholds;
     this.hey.oneGhost = ghost;
@@ -427,6 +532,15 @@ export class Game {
     this.hey.reset();
     this.novelty.reset();
     this.ghostStats.reset();
+    if (this.floor1) {
+      this.f1?.reset();
+      // 幽霊はソファに座っているので、実体は止めておく
+      this.monster.frozen = true;
+      this.monster.group.visible = false;
+    } else {
+      this.monster.frozen = false;
+      this.monster.group.visible = true;
+    }
     for (const p of this.level.inspectPoints) {
       p.inspected = 0;
       p.discovered = false;
@@ -443,6 +557,8 @@ export class Game {
     this.reactionFor = null;
     this.journeyEvents = [];
     this.lightOn = true;
+    this.lastPos = { x: 0, z: 0 };
+    this.turnAnchor = 0;
     this.carryingDoll = false;
     this.deathTimer = 0;
     this.wasVisible = false;
@@ -585,6 +701,10 @@ export class Game {
     }
     // ONE GHOST MODE では調査地点も電話も存在しない。[E]は帰るためだけのキー
     if (this.ghost) return;
+    if (this.floor1) {
+      this.f1?.interact();
+      return;
+    }
     const phone = this.nearestPoint('phone');
     if (this.anomalies.phoneRinging && phone && this.pointDistance(phone) <= CONFIG.inspect.range) {
       if (this.anomalies.answerPhone()) {
@@ -1027,8 +1147,8 @@ export class Game {
       ? INVISIBLE
       : this.frameOf(this.monster.headWorld, this.monster.chestWorld);
 
-    // --- 異変 ---
-    this.anomalies.update(dt, {
+    // --- 異変（FLOOR 1 は専用システムが世界を動かす） ---
+    if (!this.floor1) this.anomalies.update(dt, {
       playerPos: this.player.position,
       playerYaw: this.player.yaw,
       grid: this.level.grid,
@@ -1216,7 +1336,20 @@ export class Game {
     }
 
     // --- Dismiss（Xを押しっぱなしで、明確に降りる）---
-    const req = this.requests.active;
+    if (this.floor1) {
+      if (this.f1?.active && this.input.down('KeyX')) {
+        this.dismissHold += dt;
+        if (this.dismissHold >= CONFIG.request.dismiss.holdTime) {
+          this.dismissHold = 0;
+          this.f1.dismiss();
+          this.toast('DISMISSED', 1.4);
+          store.setNow({ request: null });
+        }
+      } else {
+        this.dismissHold = 0;
+      }
+    }
+    const req = this.floor1 ? null : this.requests.active;
     if (req && this.input.down('KeyX')) {
       this.dismissHold += dt;
       if (this.dismissHold >= CONFIG.request.dismiss.holdTime) {
@@ -1231,6 +1364,20 @@ export class Game {
     if (this.lastCallPayoff > 0) {
       this.lastCallPayoff -= dt;
       if (this.lastCallPayoff <= 0) this.fireLastCallPayoff();
+    }
+
+    // --- HS FLOOR 1 MODE ---
+    if (this.floor1 && this.f1) {
+      const p = this.player.position;
+      const moved = Math.hypot(p.x - this.lastPos.x, p.z - this.lastPos.z) > 0.06;
+      let turned = this.player.yaw - this.turnAnchor;
+      while (turned > Math.PI) turned -= Math.PI * 2;
+      while (turned < -Math.PI) turned += Math.PI * 2;
+      this.f1.update(dt, { holdingE: this.input.down('KeyE'), moved, turned });
+      this.lastPos = { x: p.x, z: p.z };
+      // TURN AROUND 系の基準は、リクエストが出た瞬間に取り直す
+      if (!this.f1.active) this.turnAnchor = this.player.yaw;
+      store.set({ request: this.f1.view() });
     }
 
     // --- Novelty のKPIと「もう飽きられている」コメント ---
@@ -1249,7 +1396,8 @@ export class Game {
       this.staleChatCooldown = 14;
       this.chat.burst('stale', 1);
     }
-    if (!this.goalReached && this.stream.earnings >= CONFIG.streamGoal.target) {
+    if (this.floor1) this.goalReached = this.f1?.goal ?? false;
+    if (!this.floor1 && !this.goalReached && this.stream.earnings >= CONFIG.streamGoal.target) {
       this.goalReached = true;
       this.stream.addBoost(1.0, 8);
       this.chat.burst('escape', 3);
@@ -1269,7 +1417,9 @@ export class Game {
       });
     }
 
-    this.requests.update(dt, this.buildRequestContext(selfieMonsterInFrame, selfieMonsterBehind));
+    if (!this.floor1) {
+      this.requests.update(dt, this.buildRequestContext(selfieMonsterInFrame, selfieMonsterBehind));
+    }
 
     this.chat.update(dt, this.chatCategory(), this.stream.viewers, this.stream.engagement);
     this.audio.update(dt, this.monster.danger, this.distance, clamp01(this.monster.stateRank() / 4));
@@ -1427,6 +1577,28 @@ export class Game {
 
     // ONE GHOST MODE では調査地点は「ただの背景」。怪異だけが被写体になる（§32）
     if (this.ghost) return out;
+
+    // HS FLOOR 1 は独自のオブジェクトを被写体にする
+    if (this.floor1) {
+      for (const spec of FLOOR1_OBJECTS) {
+        const st = this.f1?.objects.get(spec.id);
+        if (!st || !st.discovered) continue;
+        this._probe.set(spec.x, spec.height, spec.z);
+        const framing = this.frameOf(this._probe);
+        const t = this.trackFilm(spec.id, st.state, framing.visible, dt);
+        out.push({
+          key: `f1:${spec.id}`,
+          label: spec.label,
+          framing,
+          base: spec.filmValue,
+          stateKey: t.stateKey,
+          novelty: t.novelty,
+          hold: this.holdOf(t),
+          isMonster: false,
+        });
+      }
+      return out;
+    }
 
     for (const p of this.level.inspectPoints) {
       this._probe.set(p.x, p.height, p.z);
@@ -1809,6 +1981,7 @@ export class Game {
       return `[E] END STREAM AND LEAVE`;
     }
     if (this.ghost) return null;
+    if (this.floor1) return this.f1?.prompt() ?? null;
     const phone = this.nearestPoint('phone');
     if (this.anomalies.phoneRinging && phone && this.pointDistance(phone) <= CONFIG.inspect.range) {
       return '[E] ANSWER IT';
@@ -1909,6 +2082,27 @@ export class Game {
         : 0;
     const ghostKpi = this.ghost ? this.ghostStats.kpi(this.hey.total, heyAgainRate) : null;
     const rate = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
+    if (this.floor1 && this.f1) {
+      const k = this.f1.kpi();
+      this.logger.floor1 = {
+        discoveries: k.discoveries,
+        requests_offered: k.offered,
+        requests_completed: k.completed,
+        requests_dismissed: k.dismissed,
+        requests_ignored: k.ignored,
+        unique_requests: k.uniqueRequests,
+        repeated_requests: k.repeatedRequests,
+        bath_sip_count: k.bathSips,
+        ghost_selfie_count: k.ghostSelfies,
+        voluntary_continuations: k.voluntaryContinuations,
+        median_altar_hold: k.medianAltarHold,
+        altar_reached_tier2: k.altarTier2,
+        median_phone_hold: k.medianPhoneHold,
+        phone_reached_tier2: k.phoneTier2,
+        goal_reached: k.goal ? 1 : 0,
+        last_temptation: k.lastTemptation ? 1 : 0,
+      };
+    }
     this.logger.economy = {
       ...this.novelty.stats(),
       goal_reached: this.goalReached ? 1 : 0,
@@ -1973,6 +2167,7 @@ export class Game {
           highestHaunting: Math.round(this.maxHaunting),
         },
         oneGhost: ghostKpi,
+        floor1: this.floor1 && this.f1 ? this.f1.kpi() : null,
         economy: {
           ...this.novelty.stats(),
           goalReached: this.goalReached,
@@ -2080,6 +2275,7 @@ export class Game {
       carrying: this.carryingDoll,
       playerPos: { x: this.player.position.x, z: this.player.position.z },
       dismissHold: this.dismissHold / CONFIG.request.dismiss.holdTime,
+      f1Debug: this.floor1 && this.f1 ? this.f1.debug() : null,
       stateKey: this.stream.breakdown.stateKey,
       repeatCount: this.repeatCountOfCurrent(),
       novelty: this.stream.breakdown.novelty,
@@ -2183,6 +2379,9 @@ export class Game {
       haunting: this.haunting,
       hey: this.hey,
       ghostStats: this.ghostStats,
+      floor1: () => this.f1,
+      lightOn: () => this.lightOn,
+      toggleLight: () => this.toggleLight(),
       mode: () => this.mode,
       setMode: (m: GameMode) => {
         this.mode = m;

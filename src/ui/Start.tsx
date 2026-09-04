@@ -34,6 +34,15 @@ const MODES: Array<{
     ],
   },
   {
+    id: 'floor1',
+    name: 'HS FLOOR 1 MODE',
+    tag: '本編1階のレイアウトで検証',
+    lines: [
+      '仏壇・遺影・電話・風呂・冷蔵庫・ソファの人影',
+      '押しっぱなしでやめられなくなる。近づいて初めて触れる',
+    ],
+  },
+  {
     id: 'one_ghost',
     name: 'ONE GHOST MODE',
     tag: '一体との距離感そのものが怖い',
@@ -59,7 +68,7 @@ export function StartOverlay({ onStart }: Props) {
           稼いだ金は <b>入口に戻って [E] を押した時点で確定</b>する。死ぬと大半を失う。
         </p>
 
-        <div className="modes">
+        <div className="modes modes-3">
           {MODES.map((m) => (
             <button key={m.id} type="button" className="mode" onClick={() => onStart(m.id)}>
               <span className="mode-name">{m.name}</span>

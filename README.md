@@ -64,6 +64,8 @@ v1は「怪異を怒らせて逃げるゲーム」に寄りすぎていたため
 | **STANDARD MVP** | 廃墟そのものとViewer Requestが怖い | 調査地点・環境怪異・Haunted Level・リクエスト連鎖。以下このREADMEの本文 |
 | **ONE GHOST MODE** | 一体の怪異との距離感そのものが怖い | **一部屋だけ**のステージに怪異が一体。環境怪異もおつかいも無い → **[ONE_GHOST_MODE.md](ONE_GHOST_MODE.md)** |
 
+| **HS FLOOR 1 MODE** | 本編1階のレイアウトで検証 | 仏壇・遺影・電話・風呂・冷蔵庫・ソファの人影。押しっぱなしのチキンレース → **[FLOOR1.md](FLOOR1.md)** |
+
 STANDARD MODE の経済（安全な反復は枯れる / 危険と新規性が儲かる）と
 Request Director v2（命令ではなく誘惑）は → **[ECONOMY.md](ECONOMY.md)**
 
@@ -557,6 +559,7 @@ src/
     grid.ts              占有グリッド。壁生成 / 衝突 / 視線 / 半径を考慮したBFS経路
     level.ts             回遊型ステージ（STANDARD）、調査地点、ドア、蛍光灯、アンカー地点
     ghostLevel.ts        一部屋ステージ（ONE GHOST MODE）。柱と外壁だけ
+    floor1Level.ts       本編1階ステージ（HS FLOOR 1 MODE）とオブジェクト定義
     player.ts            FPSコントローラ、方向別速度、Selfieカメラと自分のモデル
     monster.ts           怪異のメッシュ / Danger段階 / 行動レイヤー
   systems/
@@ -571,6 +574,8 @@ src/
     director.ts          テンポ監視。静かすぎるときに何かを起こす
     oneGhost.ts          ONE GHOST MODE のKPI集計（接近・後退・引き返し）
     novelty.ts           撮れ高の新規性（対象+状態）とRisk倍率
+    floor1.ts            FLOOR 1 の RequestPool と Director（フィルタ→スコア→抽選）
+    floor1Mode.ts        FLOOR 1 の本体（Discovery / HOLD / World Memory / Ghost）
     audio.ts             WebAudio合成音
     logger.ts            プレイログとKPI集計
   ui/
@@ -578,6 +583,7 @@ src/
   dev/
     autoplay.ts          実物のGameを操作するバランス検証ボット（STANDARD）
     oneGhostBot.ts       同上（ONE GHOST MODE）
+    floor1Bot.ts         同上（HS FLOOR 1 MODE）
 ```
 
 ---

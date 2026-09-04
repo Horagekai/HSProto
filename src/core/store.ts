@@ -66,6 +66,26 @@ export interface ResultData {
   };
   /** ONE GHOST MODE のKPI（通常モードでは null） */
   oneGhost: OneGhostKpi | null;
+  /** HS FLOOR 1 MODE のKPI（他モードでは null） */
+  floor1: {
+    discoveries: number;
+    offered: number;
+    completed: number;
+    dismissed: number;
+    ignored: number;
+    uniqueRequests: number;
+    repeatedRequests: number;
+    bathSips: number;
+    ghostSelfies: number;
+    voluntaryContinuations: number;
+    medianAltarHold: number;
+    altarTier2: number;
+    medianPhoneHold: number;
+    phoneTier2: number;
+    goal: boolean;
+    lastTemptation: boolean;
+    memory: string[];
+  } | null;
   /** Novelty / Repetition / Risk Reward の検証KPI */
   economy: {
     repeatFarmed: number;
@@ -151,6 +171,15 @@ export interface Snapshot {
   playerPos: { x: number; z: number };
   /** Dismiss（X長押し）の進捗 0..1 */
   dismissHold: number;
+  /** FLOOR 1 のデバッグ表示 */
+  f1Debug: {
+    room: string;
+    ghost: string;
+    director: string;
+    candidates: string[];
+    rejected: string[];
+    memory: string[];
+  } | null;
   /** Novelty / Risk の内訳（デバッグパネルでのみ表示。通常UIには出さない） */
   stateKey: string;
   repeatCount: number;
@@ -202,6 +231,7 @@ const initial: Snapshot = {
   pointerLocked: false,
   playerPos: { x: 0, z: 0 },
   dismissHold: 0,
+  f1Debug: null,
   stateKey: '',
   repeatCount: 0,
   novelty: 1,

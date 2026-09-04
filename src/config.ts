@@ -597,6 +597,73 @@ export const CONFIG = {
   },
 
   /**
+   * HS FLOOR 1 MODE。
+   * 本編1階のレイアウトで、Discovery / HOLD / RequestPool Director を検証する。
+   */
+  floor1: {
+    /** 発見できる距離と、カメラに収める判定 */
+    discoverDistance: 6,
+    /** これだけカメラに収め続けたら「見つけた」 */
+    discoverLook: 0.6,
+    /** 幽霊はもっと遠くからでも見つかる */
+    ghostDiscoverDistance: 16,
+    ghostDiscoverLook: 1.4,
+
+    /** [E] で触れる距離 */
+    interactRange: 3.0,
+
+    /**
+     * HOLD。押している間だけ不謹慎な行為が続く。
+     * 段に達した瞬間に確定で入り、離せばそこで終わり。ペナルティは無い。
+     */
+    hold: {
+      /** 押し続けられる上限 */
+      maxSeconds: 16,
+      /** 段を超えた瞬間のViewer反応 */
+      viewerSpike: 1.12,
+    },
+
+    /**
+     * Request を出す「間」。
+     * 近くにいることは条件であってトリガーではない。
+     * 直前に何か起きていたら、それを理解する時間を残す。
+     */
+    pacing: {
+      /** 候補が出てから実際に提示するまでの最短・最長 */
+      offerDelay: { min: 2.5, max: 6 },
+      /** 意味のある出来事の直後はこれだけ空ける */
+      afterEvent: 3.5,
+      /** リクエスト終了後の静寂 */
+      afterRequest: { min: 6, max: 12 },
+      /** 発見トーストの直後 */
+      afterDiscovery: 2.5,
+      /** 何も出さない時間の上限。これを超えたら世界の方を動かす */
+      quietLimit: 22,
+    },
+
+    /** 段を進む確率。後半ほど出にくい */
+    continueChances: [0.85, 0.7, 0.55, 0.4],
+
+    /** 配信目標 */
+    goal: { target: 20000, minTime: 120, minDiscoveries: 5 },
+
+    /** 幽霊の段階。Danger のしきい値 */
+    ghost: {
+      aware: 18,
+      standing: 40,
+      stalking: 62,
+      chasing: 88,
+      /** ソファから立ち上がるまでの溜め */
+      standDelay: 1.6,
+      /** 画面外でしか位置を変えない */
+      relocateCooldown: 12,
+    },
+
+    /** Discovery の報酬倍率（Novelty と併用） */
+    discoveryLikesMult: 1,
+  },
+
+  /**
    * ONE GHOST MODE。
    *
    * 通常モード（廃墟とViewer Requestが主役）とは分離した検証モード。
@@ -799,7 +866,7 @@ export const CONFIG = {
  *  standard  : 廃墟 + Viewer Request + 環境怪異（通常のMVP）
  *  one_ghost : 怪異一体だけ。距離・撮影・挑発・撤退だけで遊ぶ
  */
-export type GameMode = 'standard' | 'one_ghost';
+export type GameMode = 'standard' | 'one_ghost' | 'floor1';
 
 export type MonsterState =
   | 'dormant'

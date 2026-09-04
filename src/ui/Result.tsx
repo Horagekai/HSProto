@@ -147,6 +147,47 @@ export function ResultScreen({ onRestart, onMenu, onDownload }: Props) {
           </details>
         )}
 
+        {r.floor1 && (
+          <details className="tempo" open>
+            <summary>HS FLOOR 1</summary>
+            <div className="tempo-grid">
+              <span>Discoveries</span>
+              <b className={r.floor1.discoveries >= 5 ? 'good' : 'bad'}>{r.floor1.discoveries}</b>
+              <span>Requests offered / done / dismissed / ignored</span>
+              <b>
+                {r.floor1.offered} / {r.floor1.completed} / {r.floor1.dismissed} /{' '}
+                {r.floor1.ignored}
+              </b>
+              <span>Request variety (unique / repeated)</span>
+              <b className={r.floor1.uniqueRequests >= 5 ? 'good' : 'bad'}>
+                {r.floor1.uniqueRequests} / {r.floor1.repeatedRequests}
+              </b>
+              <span>Altar hold (median / reached tier2)</span>
+              <b>
+                {r.floor1.medianAltarHold.toFixed(1)}s / {r.floor1.altarTier2}
+              </b>
+              <span>Phone listen (median / reached tier2)</span>
+              <b>
+                {r.floor1.medianPhoneHold.toFixed(1)}s / {r.floor1.phoneTier2}
+              </b>
+              <span>Bath sips</span>
+              <b className={r.floor1.bathSips >= 2 ? 'good' : ''}>{r.floor1.bathSips}</b>
+              <span>Ghost selfies</span>
+              <b className={r.floor1.ghostSelfies > 0 ? 'good' : ''}>{r.floor1.ghostSelfies}</b>
+              <span>Voluntary continuations</span>
+              <b className={r.floor1.voluntaryContinuations > 0 ? 'good' : 'bad'}>
+                {r.floor1.voluntaryContinuations}
+              </b>
+              <span>Stream goal / last temptation</span>
+              <b>
+                {r.floor1.goal ? 'REACHED' : 'no'} / {r.floor1.lastTemptation ? 'SHOWN' : 'no'}
+              </b>
+              <span>World memory</span>
+              <b>{r.floor1.memory.join(' ') || '-'}</b>
+            </div>
+          </details>
+        )}
+
         <details className="tempo" open>
           <summary>ECONOMY — NOVELTY / RISK</summary>
           <div className="tempo-grid">
