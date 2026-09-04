@@ -32,6 +32,12 @@ export function DebugPanel() {
       <Row k="On Screen" v={s.onScreen ? 'YES' : 'no'} />
       <Row k="Center Score" v={s.centerScore.toFixed(3)} />
       <Row k="Subject" v={s.subject ?? '-'} />
+      <Row k="State Key" v={s.stateKey || '-'} />
+      <Row k="Repeat Count" v={String(s.repeatCount)} />
+      <Row k="Novelty" v={`x${s.novelty.toFixed(2)}`} />
+      <Row k="Risk" v={`x${s.risk.toFixed(2)}`} />
+      <Row k="Footage Value" v={s.footageValue.toFixed(1)} />
+      <Row k="Stream Goal" v={s.goalReached ? 'REACHED' : 'not yet'} />
       <Row k="Clip (effective)" v={s.clip.toFixed(1)} />
       <Row k="Chase Mult" v={`x${s.chaseFilmMultiplier}`} />
       <Row k="Selfie Mult" v={`x${s.selfieMultiplier.toFixed(2)}`} />

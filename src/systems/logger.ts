@@ -45,7 +45,23 @@ export type LogEvent =
   | 'player_returned_after_escape'
   | 'last_temptation_shown'
   | 'last_temptation_taken'
-  | 'player_exited';
+  | 'player_exited'
+  // --- Novelty / Repetition / Risk Reward ---
+  | 'footage_rewarded'
+  | 'interaction_reward'
+  | 'subject_state_changed'
+  | 'mirror_interacted'
+  | 'stream_goal_reached'
+  // --- Request Director v2 ---
+  | 'request_chain_started'
+  | 'request_chain_continuation_roll'
+  | 'request_chain_delay_started'
+  | 'request_waiting_for_consequence'
+  | 'request_consequence_observed'
+  | 'one_last_call_offered'
+  | 'one_last_call_taken'
+  | 'one_last_call_completed'
+  | 'one_last_call_declined_by_exit';
 
 export interface LogRow {
   /** どちらの検証モードか（§38） */
@@ -102,6 +118,15 @@ export interface LogRow {
   selfie_with_monster: 0 | 1;
   /** テンポ検証用：最後に「意味のあること」が起きてからの秒数 */
   time_since_last_meaningful_event: number;
+  // --- Novelty / Risk（今フレームの撮れ高の内訳） ---
+  /** 今撮っている「対象 + 状態」 */
+  state_key: string;
+  /** その状態を何回目に見ているか */
+  repeat_count: number;
+  novelty_multiplier: number;
+  risk_multiplier: number;
+  footage_base_value: number;
+  footage_final_value: number;
   chasing: 0 | 1;
   player_alive: 0 | 1;
 }
@@ -155,6 +180,12 @@ const FIELDS: Array<keyof LogRow> = [
   'hey_distance_to_monster',
   'selfie_with_monster',
   'time_since_last_meaningful_event',
+  'state_key',
+  'repeat_count',
+  'novelty_multiplier',
+  'risk_multiplier',
+  'footage_base_value',
+  'footage_final_value',
   'chasing',
   'player_alive',
 ];
@@ -181,6 +212,10 @@ const ROUND: Array<keyof LogRow> = [
   'distance_traveled_back_after_request',
   'stream_earnings_at_turnback',
   'time_since_last_meaningful_event',
+  'novelty_multiplier',
+  'risk_multiplier',
+  'footage_base_value',
+  'footage_final_value',
 ];
 
 /** プレイログ。定期サンプリング + イベント行 */
@@ -208,6 +243,8 @@ export class Logger {
   tempo: Record<string, number> | null = null;
   /** ONE GHOST MODE のKPI（§39）。通常モードでは null */
   oneGhost: Record<string, number> | null = null;
+  /** Novelty / Request Director v2 のKPI */
+  economy: Record<string, number> | null = null;
   mode: GameMode = 'standard';
 
   /** 検証用の集計。Turn-back Rate / Cash-out Rate / Greed Death Rate の素材 */
@@ -259,6 +296,11 @@ export class Logger {
       })(),
       tempo: this.tempo,
       one_ghost: this.oneGhost,
+      economy: this.economy,
+      request_ignore_viewer_penalty: CONFIG.request.ignorePenalty.viewerMult,
+      mirror_interactions: this.rows
+        .filter((r) => r.event === 'mirror_interacted')
+        .map((r) => r.detail),
     };
   }
 

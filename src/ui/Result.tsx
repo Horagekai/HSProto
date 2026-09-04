@@ -148,6 +148,62 @@ export function ResultScreen({ onRestart, onMenu, onDownload }: Props) {
         )}
 
         <details className="tempo" open>
+          <summary>ECONOMY — NOVELTY / RISK</summary>
+          <div className="tempo-grid">
+            <span>Stream goal</span>
+            <b className={r.economy.goalReached ? 'good' : ''}>
+              {r.economy.goalReached ? 'REACHED' : 'not reached'}
+            </b>
+            <span>States filmed</span>
+            <b>{r.economy.trackedStates}</b>
+            <span>Repeat farming (3+ times)</span>
+            <b className={r.economy.repeatFarmed <= 2 ? 'good' : 'bad'}>
+              {r.economy.repeatFarmed}
+            </b>
+            <span>Novelty seeking rate</span>
+            <b className={r.economy.noveltySeekRate >= 50 ? 'good' : 'bad'}>
+              {r.economy.noveltySeekRate}%
+            </b>
+            <span>Risk reignite rate</span>
+            <b className={r.economy.riskReigniteRate >= 30 ? 'good' : 'bad'}>
+              {r.economy.riskReigniteRate}%
+            </b>
+            <span>Safe farming earnings share</span>
+            <b className={r.economy.safeFarmShare <= 40 ? 'good' : 'bad'}>
+              {r.economy.safeFarmShare}%
+            </b>
+          </div>
+        </details>
+
+        <details className="tempo">
+          <summary>REQUEST DIRECTOR</summary>
+          <div className="tempo-grid">
+            <span>Voluntary continuation rate</span>
+            <b>{r.director.voluntaryContinuationRate}%</b>
+            <span>High-tier (¥6,000+) continuation</span>
+            <b>{r.director.highTierContinuationRate}%</b>
+            <span>Walk away rate</span>
+            <b className={r.director.walkAwayRate > 5 ? 'good' : 'bad'}>
+              {r.director.walkAwayRate}%
+            </b>
+            <span>Full ladders</span>
+            <b>{r.director.fullLadders}</b>
+            <span>Hesitation by tier (s)</span>
+            <b>{r.director.hesitationByTier.map((h) => h.toFixed(1)).join(' / ')}</b>
+            <span>ONE LAST CALL</span>
+            <b className={r.director.lastCallTaken ? 'good' : ''}>
+              {!r.director.lastCallOffered
+                ? 'not offered'
+                : r.director.lastCallCompleted
+                  ? 'TAKEN'
+                  : r.director.lastCallTaken
+                    ? 'started'
+                    : 'WALKED AWAY'}
+            </b>
+          </div>
+        </details>
+
+        <details className="tempo">
           <summary>CHICKEN RACE</summary>
           <div className="tempo-grid">
             <span>Requests offered / completed / ignored</span>

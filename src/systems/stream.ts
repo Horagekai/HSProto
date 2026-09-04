@@ -9,8 +9,12 @@ export interface FilmCandidate {
   framing: Framing;
   /** 基礎価値 */
   base: number;
-  /** 同じものを撮り続けたことによる価値低下 0..1 */
-  freshness: number;
+  /** 「対象 + 状態」の識別子。これが変われば別の映像として扱う */
+  stateKey: string;
+  /** 新規性 0..1。同じ状態を繰り返すほど下がる（時間では戻らない） */
+  novelty: number;
+  /** 同じ状態を撮り続けたことによる減衰 0..1 */
+  hold: number;
   isMonster: boolean;
   monsterState?: MonsterState;
   monsterMoving?: boolean;
@@ -19,6 +23,8 @@ export interface FilmCandidate {
 
 export interface StreamInput {
   candidates: FilmCandidate[];
+  /** 危険度倍率。今フレームの状況（距離・段階・Selfie・ライト・直前のHEY）で決まる */
+  risk: number;
   chasing: boolean;
   /** Selfieに怪異が入っているか、その距離 */
   selfieActive: boolean;
@@ -58,6 +64,10 @@ export class StreamSystem {
   maxStars = 0;
   /** 良い映像が撮れていない時間 */
   idleTime = 0;
+  /** 直近フレームで得たLikes（KPIの切り分け用） */
+  lastGain = 0;
+  /** 今フレームの内訳（デバッグ表示・ログ用） */
+  breakdown = { base: 0, novelty: 1, hold: 1, risk: 1, final: 0, stateKey: '' };
 
   private boosts: Boost[] = [];
   private surge = 0;
@@ -79,6 +89,8 @@ export class StreamSystem {
     this.maxEngagement = 1;
     this.maxStars = 0;
     this.idleTime = 0;
+    this.lastGain = 0;
+    this.breakdown = { base: 0, novelty: 1, hold: 1, risk: 1, final: 0, stateKey: '' };
     this.boosts = [];
     this.surge = 0;
   }
@@ -105,7 +117,12 @@ export class StreamSystem {
     this.surge = strength;
   }
 
-  private valueOf(c: FilmCandidate): number {
+  /**
+   * 映像の価値。
+   *   Base × Novelty × Hold × Risk × Framing × Activity
+   * Framing（中央度・距離）と Activity（動き・こちらを見ている・段階）は raw に入っている。
+   */
+  private rawOf(c: FilmCandidate): number {
     const clip = CONFIG.stream.clip;
     const f = c.framing;
     if (!f.visible) return 0;
@@ -116,7 +133,11 @@ export class StreamSystem {
       if (c.monsterMoving) raw += clip.movingBonus;
       if (c.monsterLooking) raw += clip.lookingAtYouBonus;
     }
-    return raw * c.freshness;
+    return raw;
+  }
+
+  private valueOf(c: FilmCandidate, risk: number): number {
+    return this.rawOf(c) * c.novelty * c.hold * risk;
   }
 
   update(dt: number, input: StreamInput) {
@@ -126,13 +147,23 @@ export class StreamSystem {
     let best: FilmCandidate | null = null;
     let bestValue = 0;
     for (const c of input.candidates) {
-      const v = this.valueOf(c);
+      const v = this.valueOf(c, input.risk);
       if (v > bestValue) {
         bestValue = v;
         best = c;
       }
     }
     this.subject = best ? best.label : null;
+    this.breakdown = best
+      ? {
+          base: this.rawOf(best),
+          novelty: best.novelty,
+          hold: best.hold,
+          risk: input.risk,
+          final: bestValue,
+          stateKey: best.stateKey,
+        }
+      : { base: 0, novelty: 1, hold: 1, risk: input.risk, final: 0, stateKey: '' };
     this.clipRaw = damp(this.clipRaw, bestValue, clip.smooth, dt);
 
     // 逃走中に振り返って撮る = 最大の価値
@@ -211,6 +242,7 @@ export class StreamSystem {
       st.likesPerSec *
       viewerFactor;
     const gained = likeRate * dt * (1 + this.surge * 6);
+    this.lastGain = gained;
     this.likes += gained;
     this.earnings += gained * st.yenPerLike;
   }

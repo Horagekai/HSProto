@@ -12,6 +12,7 @@ export type ChatCategory =
   | 'chase'
   | 'filming_back'
   | 'provoke'
+  | 'stale'
   | 'request'
   | 'temptation'
   | 'leaving'
@@ -125,6 +126,17 @@ const LINES: Record<ChatCategory, string[]> = {
     'do it again',
     'HE PROVOKED IT',
     'thats on you bro',
+  ],
+  /** もう飽きられている。出しすぎない（§9） */
+  stale: [
+    'we saw that already',
+    'same thing again',
+    'show us something else',
+    'boring',
+    'move on',
+    'ok and?',
+    'nothing new',
+    'weve seen it',
   ],
   request: [
     'DO IT',

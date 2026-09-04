@@ -18,12 +18,41 @@ import { AudioSystem } from './systems/audio';
 import { Logger, type LogRow } from './systems/logger';
 import { Director } from './systems/director';
 import { HeySystem, type HeyResponse } from './systems/hey';
+import { NoveltySystem, riskMultiplier } from './systems/novelty';
 import { OneGhostStats } from './systems/oneGhost';
 
 const DEATH_FREEZE = 2.4;
 const DEATH_LOST = 3.8;
 /** 撮影対象として扱う調査地点の基礎価値（異変が起きていないとき） */
 const POINT_BASE_VALUE = 18;
+
+/** 対象ごとの「今どの状態を、どれだけ続けて撮っているか」 */
+interface FilmTrack {
+  stateKey: string;
+  /** 連続撮影時間 */
+  hold: number;
+  /** このexposureの新規性倍率 */
+  novelty: number;
+  /** すでに回数を消費したか */
+  awarded: boolean;
+  /** 画面から外れている時間 */
+  unseen: number;
+}
+
+/** 連続撮影時間 → 倍率（折れ線補間） */
+function holdMultiplier(seconds: number) {
+  const curve = CONFIG.novelty.hold.curve;
+  if (seconds <= curve[0][0]) return curve[0][1];
+  for (let i = 1; i < curve.length; i++) {
+    const [t1, v1] = curve[i];
+    if (seconds <= t1) {
+      const [t0, v0] = curve[i - 1];
+      const t = (seconds - t0) / (t1 - t0 || 1);
+      return v0 + (v1 - v0) * t;
+    }
+  }
+  return curve[curve.length - 1][1];
+}
 
 const INVISIBLE: Framing = {
   visible: false,
@@ -51,6 +80,7 @@ export class Game {
   private chat = new ChatSystem();
   private director = new Director();
   private hey = new HeySystem();
+  private novelty = new NoveltySystem();
   private ghostStats = new OneGhostStats();
   private flashlight: THREE.SpotLight;
 
@@ -75,6 +105,15 @@ export class Game {
   private phoneWasRinging = false;
   private monsterAppearCooldown = 0;
   private mouseHintTimer = 0;
+  /** 今フレームのRisk倍率（プレイヤーには見せない） */
+  private risk = 1;
+  private sinceHey = 999;
+  /** 対象ごとの撮影トラッキング（同じ状態を撮り続けているか） */
+  private filmTracks = new Map<string, FilmTrack>();
+  /** 「もう飽きられている」コメントの間隔 */
+  private staleChatCooldown = 0;
+  /** 配信目標を達成したか */
+  private goalReached = false;
   private debug = false;
 
   // このフレームの出来事
@@ -92,7 +131,6 @@ export class Game {
   private answeredPhoneNow = false;
 
   private framing: Framing = INVISIBLE;
-  private monsterFreshness = 1;
   private distance = 999;
   private wasVisible = false;
   private lookBackCooldown = 0;
@@ -187,8 +225,19 @@ export class Game {
       this.audio.chatBlip();
     };
 
+    this.novelty.onStateChange = (subject, from, to) => {
+      this.logger.event(
+        'subject_state_changed',
+        this.logRow(),
+        `subject=${subject} old=${from} new=${to}`,
+      );
+    };
+    this.monster.onBehaviorChange = (next) => {
+      this.requests.notifyConsequence(`monster_${next}`);
+    };
     this.monster.onStateChange = this.handleMonsterState;
     this.monster.onLunge = () => {
+      this.requests.notifyConsequence('monster_lunge');
       this.audio.monsterRoar();
       this.chat.burst('danger', 3);
       this.hint('IT MOVED AT YOU', 2);
@@ -228,6 +277,9 @@ export class Game {
       else if (type === 'mirror_figure') this.audio.whisper(distance);
     };
 
+    this.requests.onChainLog = (event, detail) => {
+      this.logger.event(event as Parameters<Logger['event']>[0], this.logRow(), detail);
+    };
     this.requests.onOffer = (r) => {
       this.director.markEvent(r.temptation ? 'temptation' : 'request_offer');
       this.director.markDecision(r.temptation ? 'temptation' : 'request');
@@ -237,6 +289,15 @@ export class Game {
     this.requests.onEngage = (r) => {
       const hesitation = this.elapsed - this.requestOfferedAt;
       this.hesitations.push(hesitation);
+      // 高額の段ほど迷う時間が伸びることを期待する（§44）
+      const tier =
+        r.reward >= 15000 ? 5
+        : r.reward >= 10000 ? 4
+        : r.reward >= 6000 ? 3
+        : r.reward >= 3000 ? 2
+        : r.reward >= 1500 ? 1
+        : 0;
+      (this.requests.hesitationByTier[tier] ??= []).push(hesitation);
       this.logger.event(
         r.temptation ? 'temptation_accepted' : 'request_accepted',
         this.logRow(),
@@ -258,6 +319,7 @@ export class Game {
     };
     this.requests.onComplete = (r, reward, option) => {
       this.director.markEvent('request_complete');
+      this.novelty.markRiskReignite();
       this.stream.addEarnings(reward);
       this.stream.spikeViewers(CONFIG.request.viewerSpike);
       this.stream.addBoost(1.5, 14);
@@ -279,9 +341,13 @@ export class Game {
     this.requests.onExpire = (r, engaged) => {
       // 無視された分だけ視聴者が離れる（断ることにもコストを持たせる）
       if (!engaged) {
-        this.stream.spikeViewers(CONFIG.request.ignorePenalty.viewerMult);
-        this.stream.addBoost(CONFIG.request.ignorePenalty.engagement, 8);
-        this.chat.push('coward', false);
+        // 断ったこと自体にはペナルティを与えない（§2）。
+        // Viewerが減るのは「新しい撮れ高が無い時間が続いたから」であるべきなので、
+        // その役目は Novelty 側に持たせてある。
+        const pen = CONFIG.request.ignorePenalty;
+        if (pen.viewerMult !== 1) this.stream.spikeViewers(pen.viewerMult);
+        if (pen.engagement !== 0) this.stream.addBoost(pen.engagement, 8);
+        this.chat.burst('stale', 1);
       }
       this.logEvent(engaged ? 'request_failed' : 'request_ignored', r.kind);
       this.clearRequestEffects();
@@ -316,6 +382,8 @@ export class Game {
     this.hey.oneGhost = ghost;
     this.requests.mode = this.mode;
     this.anomalies.autoSpawn = !ghost;
+    // ONE GHOST MODE は被写体が一体しかなく、枯らすと成立しないので Novelty は使わない
+    this.novelty.enabled = !ghost;
     this.chat.mode = this.mode;
     this.logger.mode = this.mode;
   }
@@ -332,6 +400,7 @@ export class Game {
     this.anomalies.reset();
     this.director.reset();
     this.hey.reset();
+    this.novelty.reset();
     this.ghostStats.reset();
     for (const p of this.level.inspectPoints) {
       p.inspected = 0;
@@ -354,7 +423,6 @@ export class Game {
     this.wasVisible = false;
     this.lookBackCooldown = 0;
     this.lookBackLogged = 0;
-    this.monsterFreshness = 1;
     this.distance = 999;
     this.lowClipTime = 0;
     this.approachTime = 0;
@@ -368,6 +436,11 @@ export class Game {
     this.maxHaunting = 0;
     this.chaseCount = 0;
     this.chaseGreedCounted = false;
+    this.risk = 1;
+    this.sinceHey = 999;
+    this.filmTracks.clear();
+    this.staleChatCooldown = 0;
+    this.goalReached = false;
     this.framing = INVISIBLE;
     this.audio.setChase(false);
     this.player.update(0.0001, this.input, this.level.grid, this.camera);
@@ -447,6 +520,7 @@ export class Game {
       const on = this.player.toggleSelfie();
       this.audio.shutter();
       if (on) {
+        this.novelty.markRiskReignite();
         this.chat.burst('selfie', 2);
         this.logEvent('selfie_started');
       } else {
@@ -511,7 +585,7 @@ export class Game {
   private awardTier(point: InspectPoint, tier: keyof typeof CONFIG.inspect.tiers, label: string) {
     if (point.tiers[tier]) return;
     point.tiers[tier] = true;
-    const likes = CONFIG.inspect.tiers[tier];
+    const likes = Math.round(CONFIG.inspect.tiers[tier] * this.goalMult());
     this.stream.addLikes(likes);
     this.stream.addBoost(0.6, 8);
     this.footage(`${label} +${likes} Likes`, 2.4);
@@ -526,23 +600,72 @@ export class Game {
     const first = point.inspected === 0;
     point.inspected += 1;
     point.discovered = true;
-    const likes = CONFIG.inspect.likes * (first ? 1 : CONFIG.inspect.repeatLikesMult);
-    this.stream.addLikes(likes);
-    this.haunting.add(CONFIG.haunting.inspect * (first ? 1 : CONFIG.inspect.repeatLikesMult));
-    this.stream.addBoost(0.5, 8);
+
+    // --- ここが本題 ---
+    // 「同じ対象」ではなく「同じ対象の同じ状態」で減衰させる（§2 / §3）。
+    // 鏡を擦り続けても価値は戻らない。ただし鏡の中に何かが映れば別の状態になり、価値は戻る。
+    // 「見る」と「触る」は別カウンタにする。
+    // 眺めていただけで触る報酬まで枯れると、何回目に触ったかが読めなくなるため。
+    // どちらも同じ「状態」に紐づくので、状態が変われば両方とも価値が戻る。
+    const state = this.pointStateKey(point);
+    const nov = this.novelty.consume(`touch:${point.type}`, state);
+    const likes = Math.round(CONFIG.inspect.likes * nov.multiplier * this.goalMult());
+    if (likes > 0) this.stream.addLikes(likes);
+    this.haunting.add(CONFIG.haunting.inspect * nov.multiplier);
+    this.stream.addBoost(0.5 * nov.multiplier, 8);
     this.audio.shutter();
     this.director.markEvent('inspect');
     this.awardTier(point, 'touch', `TOUCHED ${point.label}`);
-    if (first) {
-      this.footage(`${point.label}  +${Math.round(likes)} Likes`, 2.6);
+
+    if (likes <= 0) {
+      // 触れなくするのではなく、触れるけど誰も喜ばない（§17）
+      this.toast('NOBODY CARES ANYMORE', 1.6);
+      this.chat.burst('stale', 2);
+    } else if (first) {
+      this.footage(`${point.label}  +${likes} Likes`, 2.6);
       this.chat.burst('exploring', 2);
       this.audio.viewerSpike();
     } else {
-      this.toast(`+${Math.round(likes)} Likes`, 1.2);
+      this.toast(`+${likes} Likes`, 1.2);
+      if (nov.multiplier <= CONFIG.novelty.staleThreshold) this.chat.burst('stale', 1);
     }
+
     // 調べたことが「後から効いてくる」: 関連する異変を予約する
     this.anomalies.scheduleFromInspect(point.type, first);
+
+    this.logger.event('interaction_reward', this.logRow(), [
+      `object=${point.type}`,
+      `state=${state}`,
+      `count=${point.inspected}`,
+      `repeat=${nov.repeat}`,
+      `novelty=${nov.multiplier}`,
+      `likes=${likes}`,
+    ].join(' '));
+    if (point.type === 'mirror') {
+      // 今回の問題確認用の専用ログ（§32）
+      this.logger.event('mirror_interacted', this.logRow(), [
+        `mirror_interaction_count=${point.inspected}`,
+        `mirror_state=${state}`,
+        `mirror_likes_awarded=${likes}`,
+      ].join(' '));
+    }
     this.logEvent('point_inspected', point.type);
+  }
+
+  /** 今撮っている状態を何回目に見ているか（ログ・デバッグ用） */
+  private repeatCountOfCurrent() {
+    const key = this.stream.breakdown.stateKey;
+    if (!key) return 0;
+    const [subject, state] = key.split('|');
+    const table = CONFIG.novelty.tables[subject] ?? CONFIG.novelty.table;
+    const mult = this.novelty.peek(subject, state ?? '');
+    const i = table.indexOf(mult);
+    return i < 0 ? table.length : i;
+  }
+
+  /** 配信目標を達成したあとは、安全な発見の価値をわずかに下げる（§26） */
+  private goalMult() {
+    return this.goalReached ? CONFIG.streamGoal.afterGoalDiscoveryMult : 1;
   }
 
   /**
@@ -566,6 +689,9 @@ export class Game {
     });
 
     this.heyUsedNow = true;
+    this.sinceHey = 0;
+    // 安全な絵が枯れたあとに自分から危険を作った、と数える（Risk Reignite Rate）
+    this.novelty.markRiskReignite();
     this.toast('"HEY!"', 1.2);
     this.audio.provoke();
     if (this.monster.chasing) {
@@ -604,6 +730,8 @@ export class Game {
 
   /** HEYへの怪異の反応を適用する */
   private applyHeyResponse(response: HeyResponse) {
+    // 「呼んだ結果どうなったか」を見せてから次の誘惑を出す
+    this.requests.notifyConsequence(`hey_${response}`);
     const p = this.player.position;
     this.monster.hearShout(p.x, p.z, response !== 'relocate');
 
@@ -696,6 +824,11 @@ export class Game {
   }
 
   private leaveSite() {
+    const active = this.requests.active;
+    if (active?.kind === 'one_last_call' && !active.engaged) {
+      // 断って帰った。これは正しい判断であり、ペナルティは無い（§28）
+      this.logEvent('one_last_call_declined_by_exit', `reward=${active.reward}`);
+    }
     if (this.ghost) this.logEvent('player_exited');
     this.logEvent('player_left_site');
     this.chat.burst('leaving', 4);
@@ -841,9 +974,24 @@ export class Game {
       this.haunting.add(CONFIG.haunting.selfieWithMonster * dt * 0.3);
     }
 
+    // --- Risk（プレイヤーが自分で選んだ状況の重ね合わせ。Danger単独では決めない） ---
+    this.sinceHey += dt;
+    this.risk = riskMultiplier({
+      monsterVisible: this.framing.visible,
+      monsterDistance: this.distance,
+      monsterState: this.monster.state,
+      monsterBehavior: this.monster.behavior,
+      selfieWithMonster: selfieMonsterInFrame,
+      lightsOff: this.forcedLightsOff,
+      sinceHey: this.sinceHey,
+      chasing: this.monster.chasing,
+      backTurnedNear: !this.framing.visible && this.distance < 10 && this.monster.discovered,
+    });
+
     // --- 配信の数値 ---
     this.stream.update(dt, {
       candidates: this.buildCandidates(dt),
+      risk: this.risk,
       chasing: this.monster.chasing,
       selfieActive: this.player.selfie,
       selfieMonsterInFrame,
@@ -929,7 +1077,13 @@ export class Game {
     }
 
     // 何も起きない時間が続いたら、ディレクターが強制的に異変を起こす
-    if (this.director.needsEvent && !this.monster.chasing) {
+    // 何も新しいことが起きておらず、視聴者も冷めているなら、22秒を待たずに世界を動かす（§21）
+    const bored =
+      !this.ghost &&
+      this.stream.breakdown.final > 0 &&
+      this.stream.breakdown.novelty <= CONFIG.novelty.staleThreshold &&
+      this.director.sinceEvent > CONFIG.tempo.quietLimit * 0.55;
+    if ((this.director.needsEvent || bored) && !this.monster.chasing) {
       this.director.consumeForce();
       if (this.ghost) {
         this.ghostBeat();
@@ -948,6 +1102,32 @@ export class Game {
         this.logEvent('director_forced_event');
       }
       }
+    }
+
+    // --- Novelty のKPIと「もう飽きられている」コメント ---
+    this.novelty.update(dt);
+    const subjKey = this.stream.breakdown.stateKey.split('|')[0];
+    if (subjKey) this.novelty.markSwitchedSubject(subjKey);
+    this.novelty.recordLikes(this.stream.lastGain, this.risk, this.stream.breakdown.novelty);
+    this.staleChatCooldown = Math.max(0, this.staleChatCooldown - dt);
+    if (
+      !this.ghost &&
+      this.staleChatCooldown <= 0 &&
+      this.stream.breakdown.final > 0 &&
+      this.stream.breakdown.novelty <= CONFIG.novelty.staleThreshold
+    ) {
+      // 「この映像もうウケてない」が分かれば十分なので、出しすぎない（§9）
+      this.staleChatCooldown = 14;
+      this.chat.burst('stale', 1);
+    }
+    if (!this.goalReached && this.stream.earnings >= CONFIG.streamGoal.target) {
+      this.goalReached = true;
+      this.stream.addBoost(1.0, 8);
+      this.chat.burst('escape', 3);
+      this.footage(`STREAM GOAL REACHED — ¥${formatNumber(CONFIG.streamGoal.target)}`, 3.4);
+      this.audio.cash();
+      this.director.markEvent('discovery');
+      this.logEvent('stream_goal_reached', String(Math.floor(this.stream.earnings)));
     }
 
     // ONE GHOST MODE のKPI（接近・後退・帰れる状態の見送り）
@@ -996,27 +1176,103 @@ export class Game {
     return this.frameOf(this._probe).visible;
   }
 
+  /**
+   * 対象の「状態」を文字列にする。これが変われば別の映像として扱う（§3 / §23）。
+   * 同じ絵を擦っても価値が戻らないのは、この文字列が変わらないため。
+   */
+  private monsterStateKey() {
+    const [near, mid] = CONFIG.novelty.distanceBands;
+    const band = this.distance < near ? 'near' : this.distance < mid ? 'mid' : 'far';
+    const b = this.monster.behavior;
+    const move =
+      b === 'chasing' ? 'chase'
+      : b === 'lunging' ? 'lunge'
+      : b === 'peeking' ? 'peek'
+      : b === 'vanished' ? 'gone'
+      : b === 'idle' || b === 'watching' ? 'still'
+      : 'moving';
+    const look = this.monster.looksAt(this.player.position) ? 'L' : '-';
+    const selfie = this.player.selfie ? 'S' : '-';
+    return `${this.monster.state}.${move}.${band}.${look}${selfie}`;
+  }
+
+  private pointStateKey(p: InspectPoint) {
+    // 関連する異変が起きているか（鏡に何かが映っている等）だけで状態が決まる。
+    //
+    // Haunting Phase も復活条件の候補だが、これを混ぜると
+    // 1つの鏡が「normal/anomaly × フェーズ数」ぶんの状態を持ってしまい、
+    // 立っているだけで満額の撮れ高が何度も湧く。§8 の例どおり
+    // 「普通の鏡」と「何かが映っている鏡」の2状態だけにする。
+    const active = this.anomalies.active.some((a) => a.pointType === p.type);
+    return active ? 'anomaly' : 'normal';
+  }
+
+  /**
+   * 撮影トラッキング。
+   *   状態が変わった              → 新しい映像。Novelty満額から
+   *   同じ状態を撮り続けている     → hold 減衰
+   *   一度外して同じ状態を撮り直す → 次のexposure（倍率が一段下がる）
+   * **画面から外して時間を置いても回復しない**（§6）。
+   */
+  private trackFilm(subject: string, state: string, visible: boolean, dt: number): FilmTrack {
+    const cfg = CONFIG.novelty;
+    let t = this.filmTracks.get(subject);
+    if (!t) {
+      t = { stateKey: '', hold: 0, novelty: 1, awarded: false, unseen: 999 };
+      this.filmTracks.set(subject, t);
+    }
+    if (!visible) {
+      t.unseen += dt;
+      return t;
+    }
+    const key = `${subject}|${state}`;
+    if (t.stateKey !== key) {
+      // 状態が変わった＝新しい展開
+      t.stateKey = key;
+      t.hold = 0;
+      t.awarded = false;
+      t.novelty = this.novelty.peek(subject, state);
+      this.novelty.setState(subject, state);
+    } else if (t.awarded && t.unseen > cfg.regrace) {
+      // 同じ状態をもう一度撮り直した
+      t.hold = 0;
+      t.awarded = false;
+      t.novelty = this.novelty.peek(subject, state);
+    }
+    t.unseen = 0;
+    t.hold += dt;
+    if (!t.awarded && t.hold >= cfg.minExposure) {
+      t.awarded = true;
+      const nov = this.novelty.consume(subject, state);
+      this.logger.event('footage_rewarded', this.logRow(), [
+        `subject=${subject}`,
+        `state_key=${nov.key}`,
+        `repeat_count=${nov.repeat}`,
+        `novelty=${nov.multiplier}`,
+        `risk=${this.risk.toFixed(2)}`,
+        `base=${this.stream.breakdown.base.toFixed(1)}`,
+        `final=${this.stream.breakdown.final.toFixed(1)}`,
+      ].join(' '));
+    }
+    return t;
+  }
+
   /** 今フレームの撮影候補を作る */
   private buildCandidates(dt: number): FilmCandidate[] {
     const clip = CONFIG.stream.clip;
     const out: FilmCandidate[] = [];
 
     if (!this.monster.hidden) {
-      if (this.framing.visible) {
-        this.monsterFreshness = Math.max(
-          clip.freshnessMin,
-          this.monsterFreshness - clip.freshnessDecayPerSec * dt,
-        );
-      } else {
-        this.monsterFreshness = Math.min(1, this.monsterFreshness + clip.freshnessRecoverPerSec * dt);
-      }
+      const state = this.monsterStateKey();
+      const t = this.trackFilm('monster', state, this.framing.visible, dt);
       out.push({
         key: 'monster',
         label: 'IT',
         framing: this.framing,
-        // 被写体が一体しかいないので、撮影価値そのものを底上げする（§6）
         base: clip.monsterBase * (this.ghost ? CONFIG.oneGhost.monsterClipMult : 1),
-        freshness: this.monsterFreshness,
+        stateKey: t.stateKey,
+        novelty: t.novelty,
+        hold: this.holdOf(t),
         isMonster: true,
         monsterState: this.monster.state,
         monsterMoving: this.monster.isMoving,
@@ -1026,12 +1282,16 @@ export class Game {
 
     for (const a of this.anomalies.active) {
       this._probe.set(a.x, a.height, a.z);
+      const framing = this.frameOf(this._probe);
+      const t = this.trackFilm(`anomaly:${a.type}`, 'active', framing.visible, dt);
       out.push({
         key: `anomaly:${a.id}`,
         label: a.label,
-        framing: this.frameOf(this._probe),
+        framing,
         base: a.value,
-        freshness: a.freshness,
+        stateKey: t.stateKey,
+        novelty: t.novelty,
+        hold: this.holdOf(t),
         isMonster: false,
       });
     }
@@ -1042,23 +1302,30 @@ export class Game {
     for (const p of this.level.inspectPoints) {
       this._probe.set(p.x, p.height, p.z);
       const framing = this.frameOf(this._probe);
-      if (framing.visible) {
-        p.filmedTotal += dt;
-        p.freshness = Math.max(clip.freshnessMin, p.freshness - clip.freshnessDecayPerSec * 1.6 * dt);
-      } else {
-        p.freshness = Math.min(1, p.freshness + clip.freshnessRecoverPerSec * dt);
-      }
+      if (framing.visible) p.filmedTotal += dt;
+      const t = this.trackFilm(p.type, this.pointStateKey(p), framing.visible, dt);
       out.push({
         key: `point:${p.type}`,
         label: p.label,
         framing,
         base: POINT_BASE_VALUE,
-        freshness: p.freshness,
+        stateKey: t.stateKey,
+        novelty: t.novelty,
+        hold: this.holdOf(t),
         isMonster: false,
       });
     }
 
     return out;
+  }
+
+  /**
+   * 連続撮影の減衰。
+   * ONE GHOST MODE は被写体が一体しかなく、枯らすとモードが成立しないので適用しない
+   * （Novelty と足並みを揃える）。
+   */
+  private holdOf(t: FilmTrack) {
+    return this.novelty.enabled ? holdMultiplier(t.hold) : 1;
   }
 
   private updateDiscovery(_dt: number) {
@@ -1228,6 +1495,8 @@ export class Game {
         const d = this.nearestPoint('doll');
         return d ? this.isVisible(d.x, d.z, d.height) : false;
       })(),
+      goalReached: this.goalReached,
+      returningTime: this.approachTime,
     };
   }
 
@@ -1262,6 +1531,7 @@ export class Game {
   }
 
   private handleAnomalySpawn = (a: ActiveAnomaly) => {
+    this.requests.notifyConsequence(`anomaly_${a.type}`);
     if (a.type === 'light_flicker' || a.type === 'shadow_figure') this.chat.burst('anomaly', 2);
     this.director.markEvent('anomaly');
     this.logEvent('anomaly_spawned', a.type);
@@ -1307,8 +1577,9 @@ export class Game {
       CONFIG.request.reactionDelay.max,
     );
     this.reactionFor = a;
-    const likes = CONFIG.anomaly.firstDiscoveryLikes;
-    this.stream.addLikes(likes);
+    const nov = this.novelty.consume(`anomaly:${a.type}`, 'discovered');
+    const likes = Math.round(CONFIG.anomaly.firstDiscoveryLikes * nov.multiplier * this.goalMult());
+    if (likes > 0) this.stream.addLikes(likes);
     this.stream.spikeViewers(1.2);
     this.stream.addBoost(1.2, 10);
     this.haunting.add(CONFIG.haunting.firstDiscovery);
@@ -1320,6 +1591,7 @@ export class Game {
 
   private handleMonsterState = (next: string, prev: string) => {
     this.logEvent('monster_state_changed', `${prev}->${next}`);
+    this.requests.notifyConsequence(`monster_${next}`);
     if (next === 'aware') {
       this.chat.burst('danger', 2);
       this.logEvent('monster_aware');
@@ -1450,13 +1722,16 @@ export class Game {
           label: 'IT',
           framing: this.framing,
           base: CONFIG.stream.clip.monsterBase,
-          freshness: 1,
+          stateKey: 'monster|death',
+          novelty: 1,
+          hold: 1,
           isMonster: true,
           monsterState: 'chasing',
           monsterMoving: false,
           monsterLooking: true,
         },
       ],
+      risk: 1,
       chasing: true,
       selfieActive: false,
       selfieMonsterInFrame: false,
@@ -1489,6 +1764,21 @@ export class Game {
           )
         : 0;
     const ghostKpi = this.ghost ? this.ghostStats.kpi(this.hey.total, heyAgainRate) : null;
+    const rate = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
+    this.logger.economy = {
+      ...this.novelty.stats(),
+      goal_reached: this.goalReached ? 1 : 0,
+      voluntary_continuation_rate: rate(
+        this.requests.continuationDone,
+        this.requests.continuationOffered,
+      ),
+      high_tier_continuation_rate: rate(this.requests.highTierDone, this.requests.highTierOffered),
+      walk_away_rate: rate(this.requests.walkAways, this.requests.offeredCount),
+      full_ladders: this.requests.fullLadders,
+      one_last_call_offered: this.requests.lastCallOffered ? 1 : 0,
+      one_last_call_taken: this.requests.lastCallTaken ? 1 : 0,
+      one_last_call_completed: this.requests.lastCallCompleted ? 1 : 0,
+    };
     this.logger.oneGhost = ghostKpi as unknown as Record<string, number> | null;
     this.stream.setSurge(0);
     this.audio.setChase(false);
@@ -1537,6 +1827,28 @@ export class Game {
           highestHaunting: Math.round(this.maxHaunting),
         },
         oneGhost: ghostKpi,
+        economy: {
+          ...this.novelty.stats(),
+          goalReached: this.goalReached,
+        },
+        director: {
+          voluntaryContinuationRate: rate(
+            this.requests.continuationDone,
+            this.requests.continuationOffered,
+          ),
+          highTierContinuationRate: rate(this.requests.highTierDone, this.requests.highTierOffered),
+          walkAwayRate: rate(this.requests.walkAways, this.requests.offeredCount),
+          fullLadders: this.requests.fullLadders,
+          hesitationByTier: Array.from({ length: 6 }, (_, i) => {
+            const xs = this.requests.hesitationByTier[i];
+            return xs && xs.length
+              ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 10) / 10
+              : 0;
+          }),
+          lastCallOffered: this.requests.lastCallOffered,
+          lastCallTaken: this.requests.lastCallTaken,
+          lastCallCompleted: this.requests.lastCallCompleted,
+        },
         tempo: {
           ...this.director.stats(),
           requestsShown: this.requests.offeredCount,
@@ -1613,6 +1925,12 @@ export class Game {
       lightsOff: this.forcedLightsOff,
       carrying: this.carryingDoll,
       playerPos: { x: this.player.position.x, z: this.player.position.z },
+      stateKey: this.stream.breakdown.stateKey,
+      repeatCount: this.repeatCountOfCurrent(),
+      novelty: this.stream.breakdown.novelty,
+      risk: this.stream.breakdown.risk,
+      footageValue: this.stream.breakdown.final,
+      goalReached: this.goalReached,
     });
     if (this.toastTimer <= 0 && s.toast) store.set({ toast: null });
     if (this.footageTimer <= 0 && s.footage) store.set({ footage: null });
@@ -1683,6 +2001,12 @@ export class Game {
       hey_distance_to_monster: this.heyUsedNow ? this.distance : 0,
       selfie_with_monster: this.player.selfie && this.framing.visible ? 1 : 0,
       time_since_last_meaningful_event: this.director.sinceEvent,
+      state_key: this.stream.breakdown.stateKey,
+      repeat_count: this.repeatCountOfCurrent(),
+      novelty_multiplier: this.stream.breakdown.novelty,
+      risk_multiplier: this.stream.breakdown.risk,
+      footage_base_value: this.stream.breakdown.base,
+      footage_final_value: this.stream.breakdown.final,
       chasing: this.monster.chasing ? 1 : 0,
       player_alive: this.phase === 'playing' ? 1 : 0,
     };

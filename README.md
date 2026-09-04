@@ -64,6 +64,9 @@ v1は「怪異を怒らせて逃げるゲーム」に寄りすぎていたため
 | **STANDARD MVP** | 廃墟そのものとViewer Requestが怖い | 調査地点・環境怪異・Haunted Level・リクエスト連鎖。以下このREADMEの本文 |
 | **ONE GHOST MODE** | 一体の怪異との距離感そのものが怖い | **一部屋だけ**のステージに怪異が一体。環境怪異もおつかいも無い → **[ONE_GHOST_MODE.md](ONE_GHOST_MODE.md)** |
 
+STANDARD MODE の経済（安全な反復は枯れる / 危険と新規性が儲かる）と
+Request Director v2（命令ではなく誘惑）は → **[ECONOMY.md](ECONOMY.md)**
+
 ONE GHOST MODE は初期MVPのシンプルな面白さを残すための独立モードで、
 「一体の怪異だけで本当にゲームとして面白いか」だけを検証する。
 
@@ -475,6 +478,9 @@ Viewerは1.45倍に跳ね、コメントは荒れます。**失敗が「死」�
 | ★の閾値・撮影倍率 | `stream.clip.*` |
 | 暗さ | `render.*`（蛍光灯の配置は `world/level.ts` の `lampSpots`） |
 | **ONE GHOST MODE 一式** | `oneGhost.*`（ここは通常モードに一切影響しない → [ONE_GHOST_MODE.md](ONE_GHOST_MODE.md)） |
+| **反復の枯れ方 / 危険倍率** | `novelty.*`（→ [ECONOMY.md](ECONOMY.md)） |
+| **Requestの間と継続確率** | `request.director.*` / `request.lastCall.*` |
+| 配信目標 | `streamGoal.target` |
 
 ブラウザのコンソールから `__HS`（Gameインスタンス）と `__HS.dev`（開発用フック）に触れます。
 
@@ -564,6 +570,7 @@ src/
     hey.ts               HEYの反応決定（連打段階・遅延反応）
     director.ts          テンポ監視。静かすぎるときに何かを起こす
     oneGhost.ts          ONE GHOST MODE のKPI集計（接近・後退・引き返し）
+    novelty.ts           撮れ高の新規性（対象+状態）とRisk倍率
     audio.ts             WebAudio合成音
     logger.ts            プレイログとKPI集計
   ui/

@@ -62,6 +62,26 @@ export interface ResultData {
   };
   /** ONE GHOST MODE のKPI（通常モードでは null） */
   oneGhost: OneGhostKpi | null;
+  /** Novelty / Repetition / Risk Reward の検証KPI */
+  economy: {
+    repeatFarmed: number;
+    noveltySeekRate: number;
+    riskReigniteRate: number;
+    safeFarmShare: number;
+    trackedStates: number;
+    goalReached: boolean;
+  };
+  /** Request Director v2 の検証KPI */
+  director: {
+    voluntaryContinuationRate: number;
+    highTierContinuationRate: number;
+    walkAwayRate: number;
+    fullLadders: number;
+    hesitationByTier: number[];
+    lastCallOffered: boolean;
+    lastCallTaken: boolean;
+    lastCallCompleted: boolean;
+  };
   /** テンポ分析（何も起きない時間が長すぎないかの検証用） */
   tempo: {
     events: number;
@@ -122,6 +142,14 @@ export interface Snapshot {
   debug: boolean;
   pointerLocked: boolean;
   playerPos: { x: number; z: number };
+  /** Novelty / Risk の内訳（デバッグパネルでのみ表示。通常UIには出さない） */
+  stateKey: string;
+  repeatCount: number;
+  novelty: number;
+  risk: number;
+  footageValue: number;
+  /** 配信目標を達成したか */
+  goalReached: boolean;
   fps: number;
 }
 
@@ -164,6 +192,12 @@ const initial: Snapshot = {
   debug: false,
   pointerLocked: false,
   playerPos: { x: 0, z: 0 },
+  stateKey: '',
+  repeatCount: 0,
+  novelty: 1,
+  risk: 1,
+  footageValue: 0,
+  goalReached: false,
   fps: 0,
 };
 

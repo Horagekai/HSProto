@@ -129,8 +129,13 @@ export const CONFIG = {
   haunting: {
     max: 100,
     start: 5,
-    /** 時間経過による自然上昇 */
-    perSec: 0.1,
+    /**
+     * 時間経過による自然上昇。
+     * **0 にした。** Haunting はプレイヤーの行動だけで上がる。
+     * ここが時間で上がると、立っているだけで Haunting Phase が変わり、
+     * 全対象の Novelty が戻ってしまう（＝待つだけで安全に稼げる）。
+     */
+    perSec: 0,
     inspect: 3,
     firstDiscovery: 4,
     requestComplete: 8,
@@ -372,11 +377,25 @@ export const CONFIG = {
      * 「行って戻るだけ」を無くすための仕掛け。
      */
     journeyEvents: { count: 2, delay: { min: 3, max: 9 } },
-    /** 無視して時間切れになったときのViewer離脱 */
-    ignorePenalty: { viewerMult: 0.88, engagement: -0.4 },
+    /**
+     * 無視して時間切れになったときのペナルティ。
+     *
+     * **v2で 0 にした（§2）。**
+     * ペナルティがあると「金が欲しいからやる」ではなく「やらないと損するからやる」になり、
+     * Requestが誘惑ではなく命令になってしまう。
+     * Viewerが減るのは「Requestを断ったから」ではなく
+     * 「新しい撮れ高が無い時間が続いたから」であるべきなので、その役目は Novelty に渡した。
+     *
+     * 旧仕様と比較したいときは 0.88 / -0.4 に戻す（§48）。
+     */
+    ignorePenalty: { viewerMult: 1.0, engagement: 0 },
     viewerSpike: 1.3,
 
-    /** 帰ろうとしているときの誘惑リクエスト */
+    /**
+     * 帰ろうとしているときの誘惑リクエスト。
+     * 道中の引き止めは ONE MORE SHOT / CALL IT BEFORE YOU GO を使い、
+     * **ONE LAST CALL は本当の最後にだけ**取っておく（§23 / §24）。
+     */
     temptation: {
       delay: 1.2,
       chance: 0.6,
@@ -385,6 +404,42 @@ export const CONFIG = {
       rewardMult: 2.2,
       rewardBonus: 1500,
       rewardCap: 18000,
+    },
+
+    /**
+     * Request Director v2。
+     * 達成 → すぐ次、をやめて「結果を見せてから次の誘惑」にする（§8 / §37）。
+     */
+    director: {
+      /** 段ごとの次段までの待ち。後半ほど考える時間を長くする（§6） */
+      chainDelays: [
+        [1.5, 2.5],
+        [2.0, 3.0],
+        [2.5, 4.0],
+        [3.0, 5.0],
+        [4.0, 7.0],
+      ] as ReadonlyArray<readonly [number, number]>,
+      /** 段ごとの継続確率。上に行くほど出にくくする（§10 / §11） */
+      continueChances: [0.9, 0.8, 0.7, 0.6, 0.5] as readonly number[],
+      /** 怪異・世界の反応を待つ最大時間。何も起きなければ静寂そのものを結果とする（§39） */
+      maxConsequenceWait: 5,
+      /** 直近このぶんの Request Surface は繰り返さない（§16） */
+      recentSurfaceMemory: 3,
+      /** 強い反応のあとは、次の新規Chainまでさらに延ばす（§13） */
+      afterReactionPause: { min: 3, max: 6 },
+    },
+
+    /** ONE LAST CALL（本当の最後の誘惑）（§25） */
+    lastCall: {
+      /** 1ランに1回だけ */
+      once: true,
+      /** 配信目標を達成していること */
+      requireGoal: true,
+      /** 入口までこの距離 */
+      distance: 8,
+      chance: 0.7,
+      /** 達成したあとに、さらに第2段階が出る確率（§29） */
+      secondStageChance: 0.45,
     },
   },
 
@@ -423,6 +478,106 @@ export const CONFIG = {
     minInterval: 0.12,
     maxInterval: 2.4,
     maxVisible: 9,
+  },
+
+  /**
+   * Novelty（撮れ高の新規性）と Risk。
+   *
+   * 狙い:
+   *   同じ安全な絵を擦っても稼げない。もっと稼ぎたいなら
+   *   「新しいものを見る」「状況を変える」「怪異を刺激する」しかない。
+   *
+   * ただし **危険そのものが正解にならないように**、価値は
+   *   Base × Novelty × Risk × Framing × Activity
+   * の掛け算で決める。危ないだけの絵（既知の状態）は伸びない。
+   */
+  novelty: {
+    /** 同じ (対象 + 状態) を何度も見たときの倍率。index = 回数（0 = 初回） */
+    table: [1.0, 0.25, 0.05, 0] as const,
+    /** 対象ごとの上書き。撮れ高として弱いものは早く枯らす */
+    tables: {
+      // 調査地点を「触る」ぶんは、仕様どおり3回で実質ゼロ（§2）
+      'touch:mirror': [1.0, 0.25, 0.05, 0],
+      'touch:doll': [1.0, 0.25, 0.05, 0],
+      'touch:phone': [1.0, 0.25, 0.05, 0],
+      'touch:locker': [1.0, 0.25, 0.05, 0],
+      'touch:photo': [1.0, 0.25, 0.05, 0],
+      'touch:altar': [1.0, 0.25, 0.05, 0],
+      // 怪異は状態が細かく変わるぶん、同じ状態の枯れ方を少し緩くする
+      monster: [1.0, 0.3, 0.08, 0],
+      // 異変は一度撮れば十分
+      anomaly: [1.0, 0.2, 0.04, 0],
+    } as Record<string, readonly number[]>,
+
+    /** この秒数だけ撮り続けたら「1回見た」と数える（一瞬映り込んだだけでは消費しない） */
+    minExposure: 1.0,
+    /** 画面から外してこの秒数以内に戻せば、同じexposureの続きとみなす */
+    regrace: 2.5,
+    /** これ以下になったら「もう飽きられている」 */
+    staleThreshold: 0.08,
+    /** 枯れてから、この秒数以内の行動を「反応」としてKPIに数える */
+    reigniteWindow: 25,
+    /** これ以下のRiskは「安全」（Safe Farming Earnings Share の判定） */
+    safeRiskCeiling: 1.15,
+
+    /**
+     * 同じ状態を撮り続けたときの、連続撮影時間による減衰（§10）。
+     * 状態が変われば 0 に戻る。**画面から外して時間を置いても回復しない。**
+     */
+    hold: {
+      /** [経過秒, 倍率] の折れ線 */
+      curve: [
+        [0, 1.0],
+        [2, 1.0],
+        [5, 0.6],
+        [10, 0.2],
+        [16, 0.05],
+      ] as ReadonlyArray<readonly [number, number]>,
+    },
+
+    /** 怪異の距離を段階に落とす境界（この境界をまたぐと別の絵として扱う） */
+    distanceBands: [8, 18] as const,
+
+    /**
+     * Risk 倍率。プレイヤーには数値を見せない。
+     * 1.0 安全 / 1.3 少し危険 / 1.8 危険 / 2.5 非常に危険 になるように積む。
+     */
+    risk: {
+      max: 2.6,
+      nearDistance: 5,
+      midDistance: 9,
+      farDistance: 14,
+      near: 0.55,
+      mid: 0.3,
+      far: 0.12,
+      state: {
+        dormant: 0,
+        observed: 0.05,
+        aware: 0.15,
+        aggressive: 0.3,
+        hunting: 0.5,
+        chasing: 0.6,
+      } as Record<string, number>,
+      stalking: 0.2,
+      lunging: 0.35,
+      selfie: 0.4,
+      lightsOff: 0.3,
+      /** HEYを使ってからこの秒数はリスク扱い */
+      heyWindow: 6,
+      recentHey: 0.25,
+      backTurned: 0.2,
+    },
+  },
+
+  /**
+   * 配信の目標額（STANDARD MODE）。
+   * 達成後は「安全な撮れ高はもう撮り尽くした」状態を作るため、
+   * 発見系の報酬をわずかに下げる。リクエスト報酬は下げない。
+   */
+  streamGoal: {
+    target: 25000,
+    /** 達成後の Discovery / Interaction 報酬の倍率 */
+    afterGoalDiscoveryMult: 0.7,
   },
 
   /**

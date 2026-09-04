@@ -37,7 +37,10 @@ export type RequestKind =
   | 'get_closer2'
   | 'keep_filming'
   | 'hey_selfie2'
-  | 'dont_move';
+  | 'dont_move'
+  // 道中の帰宅誘惑。ONE LAST CALL は本当の最後にだけ使う（§24）
+  | 'one_more_shot'
+  | 'call_before_you_go';
 
 export type RiskLevel = 'low' | 'medium' | 'high' | 'extreme';
 
@@ -374,6 +377,25 @@ export const DEFS: Record<RequestKind, Def> = {
     haunting: 6,
   },
 
+  one_more_shot: {
+    title: 'ONE MORE SHOT',
+    desc: 'ONE MORE BEFORE YOU GO  [Q]',
+    reward: 5000,
+    risk: 'high',
+    time: 18,
+    danger: 5,
+    haunting: 8,
+  },
+  call_before_you_go: {
+    title: 'CALL IT BEFORE YOU GO',
+    desc: 'SHOUT ONCE MORE  [Q]',
+    reward: 7000,
+    risk: 'high',
+    time: 18,
+    danger: 7,
+    haunting: 10,
+  },
+
   film_the_chase: {
     title: 'FILM IT WHILE YOU RUN',
     desc: 'KEEP IT IN FRAME FOR 2s WHILE RUNNING',
@@ -447,6 +469,10 @@ export interface RequestContext {
   /** 追跡・接近に使う直近の被写体 */
   dollDistance: number;
   dollVisible: boolean;
+  /** 配信目標を達成済みか（ONE LAST CALL の条件） */
+  goalReached: boolean;
+  /** 入口へ向かって進み続けている時間 */
+  returningTime: number;
 }
 
 /**
@@ -466,11 +492,39 @@ const GHOST_LADDER: RequestKind[] = [
 /** §28 Selfie Chicken Race */
 const GHOST_SELFIE_LADDER: RequestKind[] = ['hey_selfie', 'hey_selfie2', 'dont_turn_around'];
 
-/** §20 入口からの ONE LAST CALL */
-const GHOST_LAST_CALL_LADDER: RequestKind[] = ['one_last_call', 'one_last_call2'];
+/**
+ * Request Director の状態（§36）。
+ * 「達成 → 即次」をやめ、結果を見せてから次の誘惑を置くための状態機械。
+ */
+export type DirectorState =
+  | 'IDLE'
+  | 'CHAIN_ACTIVE'
+  | 'WAITING_FOR_CONSEQUENCE'
+  | 'CHAIN_PAUSE'
+  | 'CHASE'
+  | 'RETURNING'
+  | 'LAST_TEMPTATION';
+
+/**
+ * 状況に応じた言い換え（§14 / §15）。
+ * 危険の段（RiskTier）は固定のまま、表面の文言だけ今の状況へ反応させる。
+ * 達成条件は変えないので、バランスには影響しない。
+ */
+function surfaceFor(kind: RequestKind, ctx: RequestContext): { title: string; desc: string } | null {
+  const call = kind === 'hey_call' || kind === 'hey_again' || kind === 'one_more_shot';
+  if (!call) return null;
+  if (ctx.lightsOff) return { title: 'CALL IT IN THE DARK', desc: 'LIGHTS ARE OFF.  [Q]' };
+  if (ctx.selfieActive) return { title: 'CALL IT WHILE SMILING', desc: 'STAY IN SELFIE.  [Q]' };
+  if (!ctx.monsterVisible && ctx.monsterKnown) {
+    return { title: 'CALL IT BACK', desc: "YOU LOST IT. BRING IT BACK.  [Q]" };
+  }
+  return null;
+}
 
 export class RequestSystem {
   mode: GameMode = 'standard';
+  /** Request Director の現在状態（デバッグ・ログ用） */
+  state: DirectorState = 'IDLE';
   active: ActiveRequest | null = null;
   offeredCount = 0;
   completedCount = 0;
@@ -500,6 +554,43 @@ export class RequestSystem {
   private ladder: RequestKind[] | null = null;
   private ladderRewards: number[] = [];
   private ladderStep = 0;
+
+  // --- Request Director v2 ---
+  /** 結果待ち。怪異・世界の反応を見てから次を出す（§37） */
+  private consequenceWait = 0;
+  private consequenceSeen: string | null = null;
+  /** 直近に出した Surface。表面上の繰り返しを避ける（§16） */
+  private recentKinds: RequestKind[] = [];
+  /** ONE LAST CALL は1ランに1回だけ（§23） */
+  lastCallOffered = false;
+  lastCallTaken = false;
+  lastCallCompleted = false;
+  /** 最終段のあとはChainを続けない（§30） */
+  private finalReached = false;
+
+  // --- KPI（§44〜§47） ---
+  /** 一段達成後、次の段を実際にやった回数 / 提示された回数 */
+  continuationDone = 0;
+  continuationOffered = 0;
+  highTierDone = 0;
+  highTierOffered = 0;
+  /** 提示されたが無視して安全行動へ移った回数 */
+  walkAways = 0;
+  /** ラダーを最後まで登った回数 */
+  fullLadders = 0;
+  /** 段ごとの迷い時間 */
+  hesitationByTier: number[][] = [];
+
+  /** 怪異や世界が反応した。次の誘惑はこれを見てから出す（§38 / §40） */
+  notifyConsequence(type: string) {
+    if (this.state === 'WAITING_FOR_CONSEQUENCE' && !this.consequenceSeen) {
+      this.consequenceSeen = type;
+    }
+  }
+
+  onChainLog:
+    | ((event: string, detail: string) => void)
+    | null = null;
 
   private get ghost() {
     return this.mode === 'one_ghost';
@@ -557,6 +648,21 @@ export class RequestSystem {
     this.ladder = null;
     this.ladderRewards = [];
     this.ladderStep = 0;
+    this.state = 'IDLE';
+    this.consequenceWait = 0;
+    this.consequenceSeen = null;
+    this.recentKinds = [];
+    this.lastCallOffered = false;
+    this.lastCallTaken = false;
+    this.lastCallCompleted = false;
+    this.finalReached = false;
+    this.continuationDone = 0;
+    this.continuationOffered = 0;
+    this.highTierDone = 0;
+    this.highTierOffered = 0;
+    this.walkAways = 0;
+    this.fullLadders = 0;
+    this.hesitationByTier = [];
     this.chainNext = null;
     this.chainId = 0;
     this.chainStep = 0;
@@ -589,11 +695,38 @@ export class RequestSystem {
 
   update(dt: number, ctx: RequestContext) {
     this.sinceOffer += dt;
+    if (ctx.chasing) this.state = 'CHASE';
+
+    // --- 結果待ち（§37〜§39）---
+    // 達成した直後に次を出さない。怪異・世界が反応するのを見せてから次の誘惑を置く。
+    if (this.state === 'WAITING_FOR_CONSEQUENCE' && this.chainNext) {
+      this.consequenceWait += dt;
+      const cfg = CONFIG.request.director;
+      const timedOut = this.consequenceWait >= cfg.maxConsequenceWait;
+      if (this.consequenceSeen || timedOut) {
+        this.onChainLog?.(
+          'request_consequence_observed',
+          `consequence_type=${this.consequenceSeen ?? 'silence'} wait_duration=${this.consequenceWait.toFixed(1)}`,
+        );
+        const [lo, hi] = cfg.chainDelays[
+          Math.min(this.chainNext.fromStep, cfg.chainDelays.length - 1)
+        ];
+        this.chainNext.delay = randRange(lo, hi);
+        this.onChainLog?.(
+          'request_chain_delay_started',
+          `from_step=${this.chainNext.fromStep} to_step=${this.chainNext.toStep} delay_duration=${this.chainNext.delay.toFixed(1)}`,
+        );
+        this.state = 'CHAIN_PAUSE';
+        this.consequenceWait = 0;
+        this.consequenceSeen = null;
+      }
+      return;
+    }
 
     if (this.chainNext && !this.active) {
       this.chainNext.delay -= dt;
       if (this.chainNext.delay <= 0) {
-        const { kind, temptation, reward } = this.chainNext;
+        const { kind, temptation, reward, toStep } = this.chainNext;
         this.chainNext = null;
         if (!ctx.chasing) {
           // ONE GHOST MODE では finish() の時点で段数を進めてある
@@ -601,10 +734,15 @@ export class RequestSystem {
             this.chainStep += 1;
             this.continuedChains += 1;
           }
+          this.continuationOffered += 1;
+          if (reward !== undefined && reward >= 6000) this.highTierOffered += 1;
+          this.state = 'CHAIN_ACTIVE';
           this.offer(this.make(kind, ctx, { temptation, reward }), ctx);
+          void toStep;
           return;
         }
         this.ladder = null;
+        this.state = 'CHASE';
       }
     }
     if (this.active) {
@@ -615,7 +753,14 @@ export class RequestSystem {
         this.active = null;
         this.hold = 0;
         if (expired.engaged) this.turnedBackCount += 0;
-        else this.ignoredCount += 1;
+        else {
+          this.ignoredCount += 1;
+          this.walkAways += 1;
+          this.onChainLog?.(
+            'request_ignored',
+            `request_type=${expired.kind} reward=${expired.reward} viewer_penalty=${CONFIG.request.ignorePenalty.viewerMult}`,
+          );
+        }
         this.abandonLadder();
         this.cooldown = this.postCooldown;
         this.onExpire?.(expired, expired.engaged);
@@ -628,8 +773,31 @@ export class RequestSystem {
     if (this.offeredCount >= this.maxCount || ctx.chasing) return;
 
     const t = CONFIG.request.temptation;
+    const lc = CONFIG.request.lastCall;
     if (ctx.leaving) {
+      this.state = 'RETURNING';
       this.leavingTime += dt;
+
+      // --- ONE LAST CALL：1ランに1回だけの、本当に最後の誘惑（§23 / §25） ---
+      const lastCallReady =
+        !this.lastCallOffered &&
+        !this.finalReached &&
+        (!lc.requireGoal || ctx.goalReached) &&
+        ctx.monsterKnown &&
+        ctx.distanceToEntrance <= lc.distance &&
+        ctx.returningTime >= t.delay;
+      if (lastCallReady) {
+        this.lastCallOffered = true;
+        if (Math.random() < lc.chance) {
+          this.state = 'LAST_TEMPTATION';
+          const req = this.makeLastCall(ctx);
+          this.onChainLog?.('one_last_call_offered', `reward=${req.reward}`);
+          this.offer(req, ctx);
+          return;
+        }
+      }
+
+      // --- 道中の引き止め。ONE LAST CALL とは別物にする（§24） ---
       if (
         this.leavingTime >= t.delay &&
         this.temptationCount < t.maxCount &&
@@ -647,12 +815,21 @@ export class RequestSystem {
       }
     } else {
       this.leavingTime = 0;
+      if (this.state === 'RETURNING') this.state = 'IDLE';
     }
 
     if (this.cooldown > 0) return;
+    if (this.finalReached) return;
     this.chainId += 1;
     this.chainStep = 0;
     const req = this.ghost ? this.buildOneGhost(ctx) : this.buildNormal(ctx);
+    if (req) {
+      this.state = 'CHAIN_ACTIVE';
+      this.onChainLog?.(
+        'request_chain_started',
+        `chain_id=${this.chainId} start_step=${this.chainStep} kind=${req.kind}`,
+      );
+    }
     if (!req) {
       this.cooldown = 6;
       return;
@@ -675,6 +852,16 @@ export class RequestSystem {
   }
 
   private offer(req: ActiveRequest, ctx: RequestContext) {
+    // 状況に応じた言い換え（達成条件は変えない）
+    const surface = surfaceFor(req.kind, ctx);
+    if (surface) {
+      req.title = surface.title;
+      req.description = surface.desc;
+    }
+    this.recentKinds.push(req.kind);
+    if (this.recentKinds.length > CONFIG.request.director.recentSurfaceMemory) {
+      this.recentKinds.shift();
+    }
     this.active = req;
     req.chainId = this.chainId;
     req.chainStep = this.chainStep;
@@ -740,10 +927,12 @@ export class RequestSystem {
       pool.push(() => this.make('go_back', ctx, { target: pick(far) }));
       pool.push(() => this.make('lights_off', ctx, { target: pick(far) }));
     }
-    if (ctx.discoveredPoints.has('mirror')) {
+    // 目的地系は「今まさにそこに立っている」場合は出さない。
+    // 立っているだけで達成できると、擦っているプレイヤーへ高額報酬を配り続けてしまう。
+    if (ctx.discoveredPoints.has('mirror') && ctx.pointDistance('mirror') > 12) {
       pool.push(() => this.make('selfie_mirror', ctx, { target: 'mirror' }));
     }
-    if (ctx.discoveredPoints.has('doll') && !ctx.carryingDoll) {
+    if (ctx.discoveredPoints.has('doll') && !ctx.carryingDoll && ctx.pointDistance('doll') > 10) {
       pool.push(() => this.make('carry_doll', ctx, { target: 'doll' }));
     }
     // 行動制約系は「守るのが嫌な状況」でだけ出す。
@@ -771,7 +960,12 @@ export class RequestSystem {
       pool.push(() => this.make('keep_in_frame', ctx));
     }
     if (!pool.length) return null;
-    for (let i = 0; i < 8; i++) {
+    // 直近に出したものと同じ Surface は避ける（§16）
+    for (let i = 0; i < 10; i++) {
+      const req = pick(pool)();
+      if (!this.recentKinds.includes(req.kind)) return req;
+    }
+    for (let i = 0; i < 6; i++) {
       const req = pick(pool)();
       if (req.kind !== this.lastKind) return req;
     }
@@ -819,11 +1013,21 @@ export class RequestSystem {
     return this.ladderRequest(ctx);
   }
 
-  /** §20 帰れる状態から出す ONE LAST CALL。戻る必要はなく、叫べば達成 */
+  /** ONE LAST CALL 本体。戻る必要はなく、入口から叫べば達成 */
+  private makeLastCall(ctx: RequestContext): ActiveRequest {
+    const reward = this.ghost ? CONFIG.oneGhost.request.lastCallRewards[0] : DEFS.one_last_call.reward;
+    return this.make('one_last_call', ctx, { temptation: true, reward });
+  }
+
+  /**
+   * 道中の帰宅誘惑（§24）。
+   * ONE LAST CALL という名前はここでは使わない。
+   */
   private buildGhostTemptation(ctx: RequestContext): ActiveRequest | null {
     if (!ctx.monsterKnown) return null;
-    this.startLadder(GHOST_LAST_CALL_LADDER, CONFIG.oneGhost.request.lastCallRewards);
-    return this.ladderRequest(ctx, true);
+    this.ladder = null;
+    const kind: RequestKind = Math.random() < 0.5 ? 'one_more_shot' : 'call_before_you_go';
+    return this.make(kind, ctx, { temptation: true, reward: DEFS[kind].reward });
   }
 
   private buildTemptation(ctx: RequestContext): ActiveRequest | null {
@@ -842,10 +1046,18 @@ export class RequestSystem {
       pool.push(() => this.make('get_closer', ctx, { temptation: true }));
     }
     pool.push(() => this.make('last_selfie', ctx, { temptation: true }));
-    // 入口から中へ向かって叫ぶだけ。戻る必要がないのでおつかいにならない
+    // 入口から中へ向かって叫ぶだけ。戻る必要がないのでおつかいにならない。
+    // ただし ONE LAST CALL は本当の最後にだけ取っておくので、道中は別名を使う（§24）
     if (ctx.monsterKnown) {
-      pool.push(() => this.make('one_last_call', ctx, { temptation: true }));
-      pool.push(() => this.make('one_last_call', ctx, { temptation: true }));
+      pool.push(() =>
+        this.make('one_more_shot', ctx, { temptation: true, reward: DEFS.one_more_shot.reward }),
+      );
+      pool.push(() =>
+        this.make('call_before_you_go', ctx, {
+          temptation: true,
+          reward: DEFS.call_before_you_go.reward,
+        }),
+      );
     }
     return pick(pool)();
   }
@@ -877,6 +1089,9 @@ export class RequestSystem {
     delay: number;
     temptation: boolean;
     reward?: number;
+    /** どの段からどの段へ（ログ用） */
+    fromStep: number;
+    toStep: number;
   } | null = null;
   /** 現在の連鎖 */
   chainId = 0;
@@ -891,28 +1106,93 @@ export class RequestSystem {
     this.hold = 0;
     this.longestChain = Math.max(this.longestChain, this.chainStep);
 
-    // ONE GHOST MODE：ラダーを一段上げて、すぐ次の金額を見せる（§9）
+    // ONE GHOST MODE：ラダーを一段上げる。
+    // ただし「達成 → 即次」にはしない。結果を見せてから次の誘惑を置く（§8 / §37）
     if (this.ghost) {
-      const cfg = CONFIG.oneGhost.request;
-      const hasNext = this.ladder && this.ladderStep + 1 < this.ladder.length;
-      if (hasNext && Math.random() < cfg.continueChance) {
+      const dcfg = CONFIG.request.director;
+      const fromStep = this.ladderStep;
+      const hasNext = !!this.ladder && this.ladderStep + 1 < this.ladder.length;
+      const chance = hasNext
+        ? dcfg.continueChances[Math.min(fromStep, dcfg.continueChances.length - 1)]
+        : 0;
+      const roll = Math.random();
+      if (hasNext) {
+        this.onChainLog?.(
+          'request_chain_continuation_roll',
+          `current_step=${fromStep} continue_chance=${chance} result=${roll < chance ? 'continue' : 'end'}`,
+        );
+      }
+      if (hasNext && roll < chance) {
         this.ladderStep += 1;
         this.chainStep += 1;
         this.continuedChains += 1;
         this.chainNext = {
           kind: this.ladder![this.ladderStep],
-          delay: randRange(cfg.chainDelay.min, cfg.chainDelay.max),
+          // 実際の待ち時間は「結果」を見てから決める
+          delay: 999,
           temptation: r.temptation,
           reward: this.ladderRewards[this.ladderStep],
+          fromStep,
+          toStep: this.ladderStep,
         };
-      } else {
-        this.ladder = null;
-        this.chainStep = 0;
+        this.state = 'WAITING_FOR_CONSEQUENCE';
+        this.consequenceWait = 0;
+        this.consequenceSeen = null;
+        this.onChainLog?.('request_waiting_for_consequence', `after_step=${fromStep}`);
+        this.cooldown = Math.max(
+          this.postCooldown,
+          randRange(this.interval.min, this.interval.max) * 0.7,
+        );
+        this.onComplete?.(r, reward, option);
+        return;
       }
-      this.cooldown = Math.max(
-        this.postCooldown,
-        randRange(this.interval.min, this.interval.max) * 0.7,
-      );
+      if (this.ladder && this.ladderStep + 1 >= this.ladder.length) this.fullLadders += 1;
+      this.ladder = null;
+      this.chainStep = 0;
+      this.state = 'IDLE';
+      // 直前に強い反応が起きているので、次の新規Chainまで少し延ばす（§13）
+      this.cooldown =
+        Math.max(this.postCooldown, randRange(this.interval.min, this.interval.max) * 0.7) +
+        randRange(dcfg.afterReactionPause.min, dcfg.afterReactionPause.max);
+      this.onComplete?.(r, reward, option);
+      return;
+    }
+
+    // ONE LAST CALL を達成した。ここだけ、低確率で本当の最終段が出る（§29 / §30）
+    if (r.kind === 'one_last_call') {
+      this.lastCallCompleted = true;
+      this.onChainLog?.('one_last_call_completed', `reward=${reward}`);
+      const lc = CONFIG.request.lastCall;
+      if (!this.finalReached && Math.random() < lc.secondStageChance) {
+        const finalReward = this.ghost
+          ? CONFIG.oneGhost.request.lastCallRewards[1]
+          : DEFS.one_last_call2.reward;
+        this.chainNext = {
+          kind: 'one_last_call2',
+          delay: 999,
+          temptation: true,
+          reward: finalReward,
+          fromStep: 4,
+          toStep: 5,
+        };
+        this.state = 'WAITING_FOR_CONSEQUENCE';
+        this.consequenceWait = 0;
+        this.consequenceSeen = null;
+        this.onChainLog?.('request_waiting_for_consequence', 'after_one_last_call');
+      } else {
+        this.finalReached = true;
+      }
+      this.cooldown = 999;
+      this.onComplete?.(r, reward, option);
+      return;
+    }
+    if (r.kind === 'one_last_call2') {
+      // 最終段の後はもうChainを続けない（ラン終盤が延々と伸びるのを防ぐ）
+      this.finalReached = true;
+      this.ladder = null;
+      this.chainNext = null;
+      this.cooldown = 999;
+      this.state = 'IDLE';
       this.onComplete?.(r, reward, option);
       return;
     }
@@ -921,12 +1201,29 @@ export class RequestSystem {
     const next = DEFS[r.kind].next;
     if (next) {
       // 毎回最後まで出さない。Hauntingや状況で途中終了する
-      const keepGoing = Math.random() < 0.82;
-      if (keepGoing) {
-          // 2段目以降は素の報酬カーブ（誘惑倍率を重ねない）
-        this.chainNext = { kind: next, delay: randRange(2.5, 4.5), temptation: false };
+      const dcfg = CONFIG.request.director;
+      const chance = dcfg.continueChances[Math.min(this.chainStep, dcfg.continueChances.length - 1)];
+      const roll = Math.random();
+      this.onChainLog?.(
+        'request_chain_continuation_roll',
+        `current_step=${this.chainStep} continue_chance=${chance} result=${roll < chance ? 'continue' : 'end'}`,
+      );
+      if (roll < chance) {
+        // 2段目以降は素の報酬カーブ（誘惑倍率を重ねない）
+        this.chainNext = {
+          kind: next,
+          delay: 999,
+          temptation: false,
+          fromStep: this.chainStep,
+          toStep: this.chainStep + 1,
+        };
+        this.state = 'WAITING_FOR_CONSEQUENCE';
+        this.consequenceWait = 0;
+        this.consequenceSeen = null;
+        this.onChainLog?.('request_waiting_for_consequence', `after_step=${this.chainStep}`);
       } else {
         this.chainStep = 0;
+        this.state = 'IDLE';
       }
     } else {
       this.chainStep = 0;
@@ -943,6 +1240,12 @@ export class RequestSystem {
     r.engaged = true;
     this.engagedCount += 1;
     if (r.temptation) this.turnedBackCount += 1;
+    if (r.chainStep > 0) this.continuationDone += 1;
+    if (r.reward >= 6000) this.highTierDone += 1;
+    if (r.kind === 'one_last_call') {
+      this.lastCallTaken = true;
+      this.onChainLog?.('one_last_call_taken', `reward=${r.reward}`);
+    }
     this.onEngage?.(r);
   }
 
