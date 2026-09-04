@@ -362,6 +362,7 @@ export class AnomalySystem {
     const door = this.level.doors.find((d) => d.x === x && d.z === z);
     if (!door) return;
     door.target = 0;
+    this.lastSpot = { x, z };
     this.onSound?.('door_slam', x, z, Math.hypot(x - ctx.playerPos.x, z - ctx.playerPos.z));
     this.push(this.make('door_slam', x, z, 1.3));
   }
@@ -372,6 +373,7 @@ export class AnomalySystem {
 
     // 明滅の最後に、少し離れた通路へ人影を立たせる
     const spot = this.findSpot(ctx, 9, 22);
+    this.lastSpot = spot;
     const g = this.apparitions[0];
     const anomaly = this.push(this.make('light_flicker', spot.x, spot.z, 2.0));
     if (!g) return;

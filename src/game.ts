@@ -885,10 +885,20 @@ export class Game {
     this.logEvent('one_last_call_payoff', roll.toFixed(2));
   }
 
+  /** プレイヤーの向きを基準にした方向表現（座標版） */
+  private directionToPoint(p: { x: number; z: number }) {
+    return this.directionOf(p.x - this.player.position.x, p.z - this.player.position.z);
+  }
+
   /** プレイヤーの向きを基準にした方向表現 */
   private directionTo(target: THREE.Vector3) {
-    const dx = target.x - this.player.position.x;
-    const dz = target.z - this.player.position.z;
+    return this.directionOf(
+      target.x - this.player.position.x,
+      target.z - this.player.position.z,
+    );
+  }
+
+  private directionOf(dx: number, dz: number) {
     const f = this.player.forward;
     const dot = (dx * f.x + dz * f.z) / (Math.hypot(dx, dz) || 1);
     const cross = f.x * dz - f.z * dx;
@@ -1635,15 +1645,28 @@ export class Game {
     this.reactionFor = null;
     if (!a) return;
     const ctx = this.buildRequestContext(selfieInFrame, selfieBehind);
-    const spot = this.anomalies.lastSpot ?? { x: a.x, z: a.z };
+    /*
+     * 目的地は「そのとき見た異変そのもの」の位置を使う。
+     *
+     * 以前は anomalies.lastSpot を見ていたが、これは最後に発生した異変で毎回上書きされる。
+     * 反応リクエストは目撃から2〜5秒遅れて出るので、その間に別の異変が起きると
+     * 「見たものを追いかけているのに、目的地は別の場所」になっていた。
+     */
+    const spot = { x: a.x, z: a.z };
     switch (a.type) {
       case 'noise':
       case 'door_slam':
-        this.requests.offerReaction('check_sound', ctx, { targetPos: spot });
+        this.requests.offerReaction('check_sound', ctx, {
+          targetPos: spot,
+          description: `GO WHERE IT CAME FROM — ${this.directionToPoint(spot)}`,
+        });
         break;
       case 'shadow_figure':
       case 'light_flicker':
-        this.requests.offerReaction('follow_it', ctx, { targetPos: spot });
+        this.requests.offerReaction('follow_it', ctx, {
+          targetPos: spot,
+          description: `GO WHERE IT WENT — ${this.directionToPoint(spot)}`,
+        });
         break;
       case 'mirror_figure':
         this.requests.offerReaction('look_again', ctx, { target: 'mirror' });

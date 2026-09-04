@@ -466,6 +466,8 @@ export interface ActiveRequest {
   targetType?: InspectType;
   targetLabel?: string;
   targetPos?: { x: number; z: number };
+  /** 提示された時点での目的地までの距離。進捗をここからの相対で出す */
+  targetStart?: number;
 }
 
 export interface RequestContext {
@@ -903,7 +905,12 @@ export class RequestSystem {
   offerReaction(
     kind: RequestKind,
     ctx: RequestContext,
-    opts: { target?: InspectType; targetPos?: { x: number; z: number }; reward?: number } = {},
+    opts: {
+      target?: InspectType;
+      targetPos?: { x: number; z: number };
+      reward?: number;
+      description?: string;
+    } = {},
   ) {
     if (this.active) return false;
     if (this.offeredCount >= this.maxCount) return false;
@@ -979,6 +986,9 @@ export class RequestSystem {
       targetType: opts.target,
       targetLabel: label,
       targetPos: opts.targetPos,
+      targetStart: opts.targetPos
+        ? Math.max(4, Math.hypot(opts.targetPos.x - ctx.playerX, opts.targetPos.z - ctx.playerZ))
+        : undefined,
     };
   }
 
@@ -1395,7 +1405,9 @@ export class RequestSystem {
         const p = r.targetPos;
         if (!p) break;
         const d = Math.hypot(p.x - ctx.playerX, p.z - ctx.playerZ);
-        r.progress = clamp01((24 - d) / 20);
+        // 提示時の距離からの相対で出す。何m離れていても、近づけば必ず進む
+        const start = r.targetStart ?? 24;
+        r.progress = clamp01(1 - (d - 3.5) / Math.max(1, start - 3.5));
         if (d <= 3.5) {
           this.enterStage2(r, ctx);
           return;
