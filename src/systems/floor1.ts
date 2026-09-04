@@ -49,6 +49,11 @@ export interface Floor1RequestDef {
   requiredGhost?: GhostState[];
   /** これを達成済みでないと出さない */
   afterRequest?: string;
+  /**
+   * 状況Request専用。**直前に触ったオブジェクトがこの中にある時だけ出す。**
+   * これが無いと「文脈と無関係な制約」が受け皿として出続けてしまう。
+   */
+  afterObject?: string[];
   cooldown: number;
   oncePerRun?: boolean;
   weight: number;
@@ -445,6 +450,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     time: 20,
     danger: 6,
     haunting: 8,
+    afterObject: ['ghost', 'phone', 'mirror', 'fridge', 'portraits'],
   },
   {
     id: 'sit_turn',
@@ -459,6 +465,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     time: 10,
     danger: 4,
     haunting: 6,
+    afterObject: ['ghost', 'phone', 'mirror'],
   },
   {
     id: 'sit_dont_move',
@@ -474,6 +481,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     time: 20,
     danger: 4,
     haunting: 6,
+    afterObject: ['altar', 'bath', 'phone', 'portraits'],
   },
   {
     id: 'sit_lights_off',
@@ -489,6 +497,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     time: 22,
     danger: 5,
     haunting: 9,
+    afterObject: ['mirror', 'altar', 'fridge'],
   },
   {
     id: 'sit_turn_last',
@@ -505,6 +514,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     danger: 6,
     haunting: 8,
     lastTemptation: true,
+    afterObject: ['ghost', 'phone', 'mirror'],
   },
   // ---------------- CHASE ----------------
   {
@@ -551,6 +561,10 @@ export interface Floor1Context {
   attention: Record<string, number>;
   /** 一度離れて戻ってきた対象 */
   reengaged: Set<string>;
+  /** 直前に触った / 達成したオブジェクト。状況Requestはこれに紐づく */
+  lastObject: string | null;
+  /** その出来事からの経過秒 */
+  sinceObject: number;
 }
 
 export interface Candidate {
@@ -627,6 +641,13 @@ export class Floor1Director {
     if (def.maxHaunted !== undefined && ctx.haunted > def.maxHaunted) return 'haunted_high';
     if (def.requiredGhost && !def.requiredGhost.includes(ctx.ghost)) return 'ghost_state';
     if (def.lastTemptation && !ctx.returning) return 'not_returning';
+
+    // 状況Requestは、直前に触ったオブジェクトに紐づくものだけ出す（受け皿にしない）
+    if (!def.object) {
+      if (!ctx.lastObject) return 'no_recent_object';
+      if (ctx.sinceObject > CONFIG.floor1.pacing.situationWindow) return 'object_too_old';
+      if (def.afterObject && !def.afterObject.includes(ctx.lastObject)) return 'object_mismatch';
+    }
     if (!def.lastTemptation && ctx.ghost === 'chasing' && def.id !== 'chase_film') return 'chasing';
     return null;
   }
@@ -660,16 +681,17 @@ export class Floor1Director {
         reasons.push('reengaged+12');
       }
     } else {
-      // 状況Requestは、対象Requestが無いときの受け皿。
-      // オブジェクト固有のものが成立するなら、そちらを優先する
-      s += 4;
-      reasons.push('situation+4');
+      // 状況Requestは「直前にやったことの続き」としてだけ出す。
+      // 出来事から時間が経つほど価値が落ちる
+      const fresh = Math.max(0, 1 - ctx.sinceObject / CONFIG.floor1.pacing.situationWindow);
+      s += fresh * 12;
+      reasons.push(`after_${ctx.lastObject}+${(fresh * 12).toFixed(0)}`);
       const sameCount = this.offeredIds.slice(-5).filter((id) =>
         FLOOR1_POOL.find((p) => p.id === id && !p.object),
       ).length;
       if (sameCount > 0) {
-        s -= sameCount * 6;
-        reasons.push(`situation_fatigue-${sameCount * 6}`);
+        s -= sameCount * 9;
+        reasons.push(`situation_fatigue-${sameCount * 9}`);
       }
     }
 

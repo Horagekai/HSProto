@@ -261,6 +261,165 @@ const GHOST_LINES: Partial<Record<ChatCategory, string[]>> = {
   ],
 };
 
+
+/**
+ * HS FLOOR 1 MODE 用の差し替え。
+ *
+ * 舞台は病院ではなく**一軒の家の1階**。
+ * 2階も、長い廊下の先の別棟も、部屋番号も無い。
+ * 存在しない場所（upstairs / that room / the walls）に言及する行を全部外してある。
+ */
+const FLOOR1_LINES: Partial<Record<ChatCategory, string[]>> = {
+  idle: [
+    'someone lived here',
+    'the tatami is rotting',
+    'why is it still furnished',
+    'check the altar',
+    'is the kitchen through there',
+    'nobody cleaned up',
+    'the smell must be awful',
+    'look at the floor',
+    'quiet house',
+    'open something',
+  ],
+  exploring: [
+    'check the altar',
+    'look behind the sofa',
+    'open the fridge',
+    'is that a phone',
+    'the bathroom',
+    'what about the closet',
+    'film the portraits',
+    'go into the living room',
+    'that door',
+  ],
+  anomaly: [
+    'DID YOU SEE THAT??',
+    'SOMETHING MOVED',
+    'nope nope nope',
+    'clip it',
+    'that was NOT the wind',
+    'IT MOVED',
+    'im getting chills',
+    'this house is not empty',
+    'rewind rewind',
+  ],
+  discovered: [
+    'is that a person',
+    "that's not normal",
+    'ON THE SOFA',
+    'NO WAY',
+    'I SAW IT TOO',
+    'THATS NOT A PERSON',
+    'my heart',
+    'someone is sitting there',
+  ],
+  close: [
+    'GET CLOSER',
+    "that's close",
+    "bro that's too close",
+    'RUN',
+    'this is how people die',
+    'FRAME IT PROPERLY',
+    'center it!!',
+    'leave',
+  ],
+  danger: [
+    "IT'S LOOKING AT YOU",
+    'GET OUT',
+    'KEEP FILMING',
+    'dude leave NOW',
+    'IT KNOWS',
+    'this is not funny anymore',
+    'it got up',
+    'why is it standing',
+  ],
+  chase: [
+    'RUN RUN RUN',
+    'GET TO THE DOOR',
+    'FILM IT',
+    'LMAO',
+    "DON'T STOP",
+    'GO GO GO',
+    'ITS RIGHT BEHIND YOU',
+    'THE ENTRANCE',
+    'nooooo',
+  ],
+  provoke: [
+    'LOL IT HEARD YOU',
+    'do it again',
+    'WHY WOULD YOU DO THAT',
+    'you idiot',
+    'thats on you bro',
+    'ring it again',
+    'stop stop stop',
+    'this is disrespectful',
+  ],
+  stale: [
+    'we saw that already',
+    'same thing again',
+    'show us something else',
+    'boring',
+    'move on',
+    'another room',
+    'nothing new',
+  ],
+  request: [
+    'DO IT',
+    'take the money',
+    'easy money',
+    "that's a lot of money",
+    'do it for the boys',
+    'one more',
+    // 全員が煽るわけではない
+    'not worth it man',
+    "that's enough",
+    "don't do it",
+    'leave',
+    'seriously just go home',
+    'he doesnt have to prove anything',
+    'have some respect',
+  ],
+  temptation: [
+    'ONE LAST TIME',
+    "don't chicken out now",
+    'you already came all this way',
+    'free money',
+    "don't leave yet",
+    'we paid for this',
+    // 止める側
+    "you got the money, go",
+    'please just leave',
+    'not worth it',
+    'go home',
+  ],
+  leaving: [
+    'leaving already?',
+    'W stream',
+    'that was enough honestly',
+    'good call',
+    'coward lol',
+    'smart',
+    'ok that was actually scary',
+  ],
+  selfie: [
+    'SELFIE TIME',
+    'ITS BEHIND YOU',
+    'BRO TURN AROUND',
+    'smile',
+    'DONT LOOK AT THE CAMERA LOOK BEHIND',
+    'PROFILE PIC',
+    'why would you turn your back',
+  ],
+  escape: [
+    'HE MADE IT',
+    'W stream',
+    'never doing that again',
+    'best content of the year',
+    'GG',
+  ],
+};
+
 export class ChatSystem {
   /** ONE GHOST MODE では一部の行を差し替える */
   mode: GameMode = 'standard';
@@ -283,6 +442,7 @@ export class ChatSystem {
 
   private lines(category: ChatCategory) {
     if (this.mode === 'one_ghost') return GHOST_LINES[category] ?? LINES[category];
+    if (this.mode === 'floor1') return FLOOR1_LINES[category] ?? LINES[category];
     return LINES[category];
   }
 

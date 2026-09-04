@@ -2205,6 +2205,7 @@ export class Game {
   }
 
   private discoveryCount() {
+    if (this.floor1) return this.f1?.discoveries ?? 0;
     return (
       this.anomalies.discovered.size + this.level.inspectPoints.filter((p) => p.discovered).length
     );

@@ -639,6 +639,12 @@ export const CONFIG = {
       afterDiscovery: 2.5,
       /** 何も出さない時間の上限。これを超えたら世界の方を動かす */
       quietLimit: 22,
+      /**
+       * 状況Request（DON'T TURN AROUND など）を出せる窓。
+       * 直前にオブジェクトへ触ってから、この秒数だけ。
+       * 過ぎたら「今やったことの続き」ではなくなるので出さない。
+       */
+      situationWindow: 20,
     },
 
     /** 段を進む確率。後半ほど出にくい */

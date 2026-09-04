@@ -31,7 +31,9 @@ export function Hud() {
           {s.lightsOff && <span className="selfie-tag danger">LIGHTS OFF</span>}
           {s.carrying && <span className="selfie-tag">CARRYING</span>}
         </div>
-        <div className="handle">@abandoned_hospital_night</div>
+        <div className="handle">
+          {s.mode === 'floor1' ? '@the_house_tonight' : '@abandoned_hospital_night'}
+        </div>
         {/* ONE GHOST MODE には集める footage が存在しない（被写体は一体だけ） */}
         {s.mode === 'one_ghost' ? (
           <div className="discoveries">ONE GHOST</div>

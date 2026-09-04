@@ -151,6 +151,9 @@ export class Floor1Mode {
     this.lastTemptationDone = false;
     this.returningTime = 0;
     this.lastEntranceDistance = 999;
+    this.lastObject = null;
+    this.sinceObject = 999;
+    this.completedIds.clear();
     this.discoveries = 0;
     this.offered = 0;
     this.completed = 0;
@@ -271,6 +274,7 @@ export class Floor1Mode {
     if (!st || st.discovered) return;
     st.discovered = true;
     this.discoveries += 1;
+    this.touchedObject(id);
     const amount = Math.round(likes * CONFIG.floor1.discoveryLikesMult);
     if (amount > 0) {
       this.d.addLikes(amount);
@@ -300,6 +304,7 @@ export class Floor1Mode {
     const st = this.objects.get(id);
     if (!st) return false;
     st.interactions += 1;
+    this.touchedObject(id);
     this.d.log('object_interacted', `object=${id} state=${st.state} count=${st.interactions}`);
 
     switch (id) {
@@ -656,10 +661,21 @@ export class Floor1Mode {
       sinceEvent: this.sinceEvent,
       attention: this.objects.attentionMap(),
       reengaged: this.objects.reengagedSet(),
+      lastObject: this.lastObject,
+      sinceObject: this.sinceObject,
     };
   }
 
   private completedIds = new Set<string>();
+  /** 直前に触った / 達成したオブジェクト */
+  private lastObject: string | null = null;
+  private sinceObject = 999;
+
+  /** オブジェクトに関わる出来事があった */
+  private touchedObject(id: string) {
+    this.lastObject = id;
+    this.sinceObject = 0;
+  }
 
   private markEvent(kind: string) {
     this.sinceEvent = 0;
@@ -782,6 +798,7 @@ export class Floor1Mode {
   private finish(a: ActiveRequest, reward: number) {
     this.completed += 1;
     this.completedIds.add(a.def.id);
+    if (a.def.object) this.touchedObject(a.def.object);
     if (a.def.type !== 'hold') {
       this.d.addEarnings(reward);
       this.d.sfxCash();
@@ -951,6 +968,7 @@ export class Floor1Mode {
   update(dt: number, input: { holdingE: boolean; moved: boolean; turned: number }) {
     this.elapsed += dt;
     this.sinceEvent += dt;
+    this.sinceObject += dt;
     this.memory.update(dt);
     this.updateDiscovery(dt);
     this.updateGhost(dt);

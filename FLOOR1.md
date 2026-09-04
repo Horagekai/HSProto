@@ -194,6 +194,28 @@ TAKE ONE LAST SELFIE ¥15,000（Selfieを撮っていた場合）
 TURN AROUND ¥12,000        （Hauntedが高い場合）
 ```
 
+## 8.5 状況Requestは直前のオブジェクトに紐づく
+
+`DON'T TURN AROUND` のような制約は、**直前に触った / 発見したオブジェクトから20秒以内**にしか出ない。
+受け皿として単独で出ることはない。
+
+| 直前に触ったもの | 出うる状況Request |
+| --- | --- |
+| ソファの人影 / 電話 / 鏡 / 冷蔵庫 / 遺影 | DON'T TURN AROUND |
+| ソファの人影 / 電話 / 鏡 | TURN AROUND |
+| 仏壇 / 風呂 / 電話 / 遺影 | DON'T MOVE |
+| 鏡 / 仏壇 / 冷蔵庫 | LIGHTS OFF |
+
+スコアも「その出来事からどれだけ経ったか」で減衰する（`after_mirror+12` → 時間が経つほど0へ）。
+
+実測で、状況Requestの比率は 7/17 → **4/13** に下がった。
+
+```text
+portrait_look → sit_dont_turn      遺影を調べた直後
+（鏡を発見）  → sit_lights_off      鏡を見つけた直後
+phone_listen  → sit_dont_turn      電話を聞いた直後
+```
+
 ## 9. ログ
 
 ```text
@@ -206,6 +228,18 @@ bath_sip / ghost_selfie / stream_goal_reached
 ```
 
 `[P]` のデバッグパネルに Room / Ghost / Director状態 / 候補とスコア / 却下理由 / World Memory を出す。
+
+## 9.5 コメント
+
+このモードは病院ではなく**一軒の家の1階**なので、コメントプールを差し替えてある。
+2階も長い廊下の先の別棟も部屋番号も無いので、そこへ言及する行を全部外した。
+配信のハンドルも `@the_house_tonight` になる。
+
+```text
+someone lived here / the tatami is rotting / why is it still furnished
+check the altar / open the fridge / is that a phone / look behind the sofa
+this house is not empty / have some respect / ON THE SOFA
+```
 
 ## 10. 3ラン実測
 
