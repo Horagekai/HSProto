@@ -12,7 +12,7 @@ import { dangerGainPerSecond } from './systems/danger';
 import { StreamSystem, type FilmCandidate } from './systems/stream';
 import { AnomalySystem, type ActiveAnomaly } from './systems/anomalies';
 import { HauntingSystem } from './systems/haunting';
-import { DEFS, RequestSystem, type ActiveRequest } from './systems/requests';
+import { DEFS, isConstraint, RequestSystem, type ActiveRequest } from './systems/requests';
 import { ChatSystem, type ChatCategory } from './systems/chat';
 import { AudioSystem } from './systems/audio';
 import { Logger, type LogRow } from './systems/logger';
@@ -114,6 +114,10 @@ export class Game {
   private staleChatCooldown = 0;
   /** 配信目標を達成したか */
   private goalReached = false;
+  /** Dismiss（Xの押しっぱなし）の蓄積 */
+  private dismissHold = 0;
+  /** ONE LAST CALL のペイオフ待ち。0より大きい間はカウントダウン中 */
+  private lastCallPayoff = 0;
   private debug = false;
 
   // このフレームの出来事
@@ -338,6 +342,21 @@ export class Game {
       this.clearRequestEffects();
       store.setNow({ request: null });
     };
+    this.requests.onDismiss = (r, sinceOffered) => {
+      // ペナルティは一切与えない。安全に降りる選択肢であることが目的（§14）
+      this.toast('DISMISSED', 1.4);
+      this.clearRequestEffects();
+      this.logger.event('request_dismissed', this.logRow(), [
+        `request_type=${r.kind}`,
+        `reward=${r.reward}`,
+        `risk_tier=${r.risk}`,
+        `time_since_offered=${sinceOffered.toFixed(1)}`,
+        `monster_distance=${this.distance.toFixed(1)}`,
+        `danger=${this.monster.danger.toFixed(0)}`,
+        `haunting=${this.haunting.level.toFixed(0)}`,
+      ].join(' '));
+      store.setNow({ request: null });
+    };
     this.requests.onExpire = (r, engaged) => {
       // 無視された分だけ視聴者が離れる（断ることにもコストを持たせる）
       if (!engaged) {
@@ -436,6 +455,8 @@ export class Game {
     this.maxHaunting = 0;
     this.chaseCount = 0;
     this.chaseGreedCounted = false;
+    this.dismissHold = 0;
+    this.lastCallPayoff = 0;
     this.risk = 1;
     this.sinceHey = 999;
     this.filmTracks.clear();
@@ -528,10 +549,7 @@ export class Game {
       }
       store.setNow({ selfie: on });
     }
-    // リクエストは行動そのものが受諾なので、[F]は「断る」に割り当てる
-    if (code === 'KeyF') {
-      if (this.requests.decline()) this.toast('DECLINED', 1.2);
-    }
+    // Dismiss は押しっぱなしなので、単発キーでは扱わない（updatePlaying 側で処理する）
   };
 
   /** [E] は状況で意味が変わる。入口 > 電話 > 調査 > 挑発 */
@@ -720,6 +738,14 @@ export class Game {
       `dangerAfter=${this.monster.danger.toFixed(0)}`,
     ].join(' '));
 
+    // ONE LAST CALL だけは「呼んだのに何も起きない」で終わらせない（§24 / §26）
+    const lastCall = this.requests.active?.kind === 'one_last_call'
+      || this.requests.active?.kind === 'one_last_call2';
+    if (lastCall) {
+      const d = CONFIG.request.lastCallPayoff.delay;
+      this.lastCallPayoff = randRange(d.min, d.max);
+    }
+
     if (result.response === 'delayed') {
       this.chat.push('did it hear you?', true);
       this.hint('...', 1.5);
@@ -809,6 +835,54 @@ export class Game {
     this.monster.forceBehavior('peeking', CONFIG.monster.peekDuration);
     this.audio.whisper(this.distance);
     this.chat.burst('anomaly', 2);
+  }
+
+  /**
+   * ONE LAST CALL のペイオフ（§23〜§27）。
+   *
+   * 通常のHEYは「沈黙」で終わってよいが、ラン最後の大きな誘惑がそれでは弱い。
+   * 呼んだ結果として、必ず何かが起こるようにする。
+   * 幽霊を画面に出す必要はない。**背後で一歩だけ足音がすれば十分**。
+   */
+  private fireLastCallPayoff() {
+    const p = this.player.position;
+    const behind = { x: p.x - this.player.forward.x * 4, z: p.z - this.player.forward.z * 4 };
+    const roll = Math.random();
+    if (roll < 0.3) {
+      // 背後で一歩
+      this.audio.footstep(false);
+      this.hint('A STEP. RIGHT BEHIND YOU.', 3);
+      this.monster.hearShout(behind.x, behind.z, false);
+      this.monster.forceBehavior('stalking', 10);
+    } else if (roll < 0.55) {
+      // 遠くで物音
+      this.audio.doorSlam(14);
+      this.hint(`SOMETHING ANSWERED — ${this.directionTo(this.monster.position)}`, 3);
+      this.monster.forceBehavior('approaching', 6);
+    } else if (roll < 0.75) {
+      // ライトが落ちる
+      this.level.flickerLamp(p.x, p.z, 2.6);
+      this.audio.whisper(6);
+      this.hint('THE LIGHT WENT OUT', 2.6);
+      this.monster.forceBehavior('relocating', 6);
+    } else if (roll < 0.92) {
+      // 背後へ回り込む
+      this.monster.position.set(behind.x, 0, behind.z);
+      this.monster.group.position.copy(this.monster.position);
+      this.audio.whisper(3);
+      this.hint('IT IS NOT WHERE IT WAS', 3);
+      this.monster.forceBehavior('watching', 6);
+    } else {
+      // 突進フェイント。追跡確定にはしない
+      this.monster.forceBehavior('lunging', 3);
+    }
+    this.stream.addBoost(1.6, 10);
+    this.stream.spikeViewers(1.35);
+    this.chat.burst('anomaly', 4);
+    this.audio.viewerSpike();
+    this.director.markEvent('monster_appear');
+    this.requests.notifyConsequence('one_last_call_payoff');
+    this.logEvent('one_last_call_payoff', roll.toFixed(2));
   }
 
   /** プレイヤーの向きを基準にした方向表現 */
@@ -1102,6 +1176,24 @@ export class Game {
         this.logEvent('director_forced_event');
       }
       }
+    }
+
+    // --- Dismiss（Xを押しっぱなしで、明確に降りる）---
+    const req = this.requests.active;
+    if (req && this.input.down('KeyX')) {
+      this.dismissHold += dt;
+      if (this.dismissHold >= CONFIG.request.dismiss.holdTime) {
+        this.dismissHold = 0;
+        this.requests.dismiss(this.elapsed - this.requestOfferedAt);
+      }
+    } else {
+      this.dismissHold = 0;
+    }
+
+    // --- ONE LAST CALL のペイオフ（必ず何かが起きる）---
+    if (this.lastCallPayoff > 0) {
+      this.lastCallPayoff -= dt;
+      if (this.lastCallPayoff <= 0) this.fireLastCallPayoff();
     }
 
     // --- Novelty のKPIと「もう飽きられている」コメント ---
@@ -1774,6 +1866,8 @@ export class Game {
       ),
       high_tier_continuation_rate: rate(this.requests.highTierDone, this.requests.highTierOffered),
       walk_away_rate: rate(this.requests.walkAways, this.requests.offeredCount),
+      dismissed: this.requests.dismissedCount,
+      dismiss_rate: rate(this.requests.dismissedCount, this.requests.offeredCount),
       full_ladders: this.requests.fullLadders,
       one_last_call_offered: this.requests.lastCallOffered ? 1 : 0,
       one_last_call_taken: this.requests.lastCallTaken ? 1 : 0,
@@ -1845,6 +1939,9 @@ export class Game {
               ? Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 10) / 10
               : 0;
           }),
+          dismissed: this.requests.dismissedCount,
+          dismissByTier: Array.from({ length: 6 }, (_, i) => this.requests.dismissByTier[i] ?? 0),
+          offeredByTier: Array.from({ length: 6 }, (_, i) => this.requests.offeredByTier[i] ?? 0),
           lastCallOffered: this.requests.lastCallOffered,
           lastCallTaken: this.requests.lastCallTaken,
           lastCallCompleted: this.requests.lastCallCompleted,
@@ -1884,6 +1981,11 @@ export class Game {
       engaged: r.engaged,
       nextTitle: next ? next.title : null,
       nextReward: next ? next.reward : 0,
+      constraint: isConstraint(r.kind),
+      constraintLeft: Math.max(
+        0,
+        (DEFS[r.kind].constraint ?? 0) * (1 - r.progress),
+      ),
     };
   }
 
@@ -1925,6 +2027,7 @@ export class Game {
       lightsOff: this.forcedLightsOff,
       carrying: this.carryingDoll,
       playerPos: { x: this.player.position.x, z: this.player.position.z },
+      dismissHold: this.dismissHold / CONFIG.request.dismiss.holdTime,
       stateKey: this.stream.breakdown.stateKey,
       repeatCount: this.repeatCountOfCurrent(),
       novelty: this.stream.breakdown.novelty,

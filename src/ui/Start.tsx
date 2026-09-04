@@ -12,7 +12,7 @@ const CONTROLS: Array<[string, string]> = [
   ['Q', 'HEY! — CALL OUT TO IT'],
   ['C', 'SELFIE MODE'],
   ['E', 'INSPECT / ANSWER / LEAVE'],
-  ['F', 'DECLINE REQUEST (NO ACCEPT BUTTON)'],
+  ['X (hold)', 'DISMISS REQUEST (NO ACCEPT BUTTON)'],
   ['P', 'DEBUG PANEL'],
   ['ESC', 'RELEASE MOUSE'],
 ];

@@ -28,6 +28,10 @@ export interface RequestView {
   nextReward: number;
   /** すでに行動で応じているか */
   engaged: boolean;
+  /** 一定時間の制約タイプか（UIを小さくして残り時間だけ出す） */
+  constraint: boolean;
+  /** 制約の残り秒数 */
+  constraintLeft: number;
 }
 
 export interface ResultData {
@@ -73,6 +77,9 @@ export interface ResultData {
   };
   /** Request Director v2 の検証KPI */
   director: {
+    dismissed: number;
+    dismissByTier: number[];
+    offeredByTier: number[];
     voluntaryContinuationRate: number;
     highTierContinuationRate: number;
     walkAwayRate: number;
@@ -142,6 +149,8 @@ export interface Snapshot {
   debug: boolean;
   pointerLocked: boolean;
   playerPos: { x: number; z: number };
+  /** Dismiss（X長押し）の進捗 0..1 */
+  dismissHold: number;
   /** Novelty / Risk の内訳（デバッグパネルでのみ表示。通常UIには出さない） */
   stateKey: string;
   repeatCount: number;
@@ -192,6 +201,7 @@ const initial: Snapshot = {
   debug: false,
   pointerLocked: false,
   playerPos: { x: 0, z: 0 },
+  dismissHold: 0,
   stateKey: '',
   repeatCount: 0,
   novelty: 1,

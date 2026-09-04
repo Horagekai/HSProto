@@ -182,6 +182,21 @@ export function ResultScreen({ onRestart, onMenu, onDownload }: Props) {
             <b>{r.director.voluntaryContinuationRate}%</b>
             <span>High-tier (¥6,000+) continuation</span>
             <b>{r.director.highTierContinuationRate}%</b>
+            <span>Dismissed (明確に降りた)</span>
+            <b className={r.director.dismissed > 0 ? 'good' : 'bad'}>{r.director.dismissed}</b>
+            <span>Dismiss rate by reward tier</span>
+            <b>
+              {r.director.offeredByTier
+                .map((n, i) =>
+                  n > 0
+                    ? `${['¥0', '¥1.5k', '¥3k', '¥6k', '¥10k', '¥15k'][i]} ${Math.round(
+                        ((r.director.dismissByTier[i] ?? 0) / n) * 100,
+                      )}%`
+                    : null,
+                )
+                .filter(Boolean)
+                .join('  ') || '-'}
+            </b>
             <span>Walk away rate</span>
             <b className={r.director.walkAwayRate > 5 ? 'good' : 'bad'}>
               {r.director.walkAwayRate}%

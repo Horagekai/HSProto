@@ -430,6 +430,21 @@ export const CONFIG = {
       afterReactionPause: { min: 3, max: 6 },
     },
 
+    /** Dismiss（明示的に降りる）（§11〜§17） */
+    dismiss: {
+      /** 誤操作しないよう、押しっぱなしで確定させる秒数 */
+      holdTime: 0.55,
+    },
+
+    /**
+     * ONE LAST CALL のペイオフ（§23〜§27）。
+     * 通常のHEYは無反応があってよいが、ここだけは**必ず何かが起こる**。
+     */
+    lastCallPayoff: {
+      /** 即時に何も返らなかった場合、この後に必ず何かを起こす */
+      delay: { min: 2, max: 4 },
+    },
+
     /** ONE LAST CALL（本当の最後の誘惑）（§25） */
     lastCall: {
       /** 1ランに1回だけ */

@@ -61,7 +61,10 @@ export type LogEvent =
   | 'one_last_call_offered'
   | 'one_last_call_taken'
   | 'one_last_call_completed'
-  | 'one_last_call_declined_by_exit';
+  | 'one_last_call_declined_by_exit'
+  | 'one_last_call_payoff'
+  | 'request_dismissed'
+  | 'constraint_completed';
 
 export interface LogRow {
   /** どちらの検証モードか（§38） */

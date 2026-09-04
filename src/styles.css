@@ -943,3 +943,87 @@ body,
   letter-spacing: 0.14em;
   color: rgba(255, 255, 255, 0.55);
 }
+
+/* ---------- Constraint Request（実行中は小さく、残り時間だけ） ---------- */
+
+.constraint {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  background: rgba(8, 8, 10, 0.82);
+  border: 1px solid rgba(255, 196, 80, 0.5);
+  border-radius: 3px;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  font-weight: 800;
+  color: #ffc450;
+}
+
+.constraint-time {
+  font-family: var(--mono);
+  color: #fff;
+  min-width: 44px;
+  text-align: right;
+}
+
+.constraint-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.constraint-bar-fill {
+  height: 100%;
+  background: #ffc450;
+}
+
+.constraint-tag {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 196, 80, 0.55);
+  border-radius: 2px;
+  font-size: 10px;
+  color: #ffc450;
+}
+
+/* ---------- Dismiss（クエストUIに見えないよう、端に小さく） ---------- */
+
+.dismiss {
+  position: relative;
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.32);
+  transition: color 0.15s;
+}
+
+.dismiss-key {
+  font-family: var(--mono);
+  padding: 0 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 2px;
+}
+
+.dismiss.holding {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.dismiss-bar {
+  position: absolute;
+  left: 0;
+  bottom: -3px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.75);
+}

@@ -44,6 +44,15 @@ export type RequestKind =
 
 export type RiskLevel = 'low' | 'medium' | 'high' | 'extreme';
 
+/** 報酬帯。Dismiss Rate by Reward Tier の集計に使う（§21） */
+export const REWARD_TIERS = [0, 1500, 3000, 6000, 10000, 15000] as const;
+
+export function rewardTier(reward: number) {
+  let t = 0;
+  for (let i = 0; i < REWARD_TIERS.length; i++) if (reward >= REWARD_TIERS[i]) t = i;
+  return t;
+}
+
 interface Def {
   title: string;
   desc: string;
@@ -58,8 +67,21 @@ interface Def {
   haunting: number;
   /** 目的地へ向かわせるタイプか（帰路に異変を仕込む） */
   destination?: boolean;
+  /**
+   * Constraint Request（§2-B）。
+   * 一定時間プレイヤーへ制約を課すタイプ。秒数は「守り切る必要のある時間」。
+   *
+   * これが付いているものは実行中に別のRequestを重ねない。
+   * カードも小さくなり、残り時間だけを出す。
+   */
+  constraint?: number;
   /** 達成したら数秒後にこれを提示する（チキンレースの次の段） */
   next?: RequestKind;
+}
+
+/** その要求は「一定時間の制約」か（§2） */
+export function isConstraint(kind: RequestKind) {
+  return DEFS[kind].constraint !== undefined;
 }
 
 /**
@@ -155,6 +177,7 @@ export const DEFS: Record<RequestKind, Def> = {
     time: 20,
     danger: 4,
     haunting: 7,
+    constraint: 10,
   },
   turn_around: {
     title: 'TURN AROUND',
@@ -173,16 +196,19 @@ export const DEFS: Record<RequestKind, Def> = {
     time: 22,
     danger: 2,
     haunting: 8,
+    constraint: 20,
   },
   lights_off: {
+    // 「目的地まで消したまま歩く」だと、道中に他の出来事が重なって
+    // 何を要求されているのか分からなくなっていた。純粋な時間制約にした（§6 / §7）
     title: 'LIGHTS OFF',
-    desc: 'NO LIGHT UNTIL YOU REACH IT',
+    desc: 'KILL THE LIGHT AND WAIT',
     reward: 5000,
     risk: 'high',
-    time: 45,
+    time: 22,
     danger: 6,
     haunting: 12,
-    destination: true,
+    constraint: 10,
   },
   keep_in_frame: {
     title: 'KEEP IT IN FRAME',
@@ -192,6 +218,7 @@ export const DEFS: Record<RequestKind, Def> = {
     time: 22,
     danger: 6,
     haunting: 7,
+    constraint: 12,
   },
   carry_doll: {
     title: 'CARRY THE DOLL OUT',
@@ -221,6 +248,7 @@ export const DEFS: Record<RequestKind, Def> = {
     time: 18,
     danger: 22,
     haunting: 16,
+    constraint: 5,
   },
   selfie_behind: {
     title: 'KEEP IT BEHIND YOU',
@@ -316,6 +344,7 @@ export const DEFS: Record<RequestKind, Def> = {
     time: 22,
     danger: 8,
     haunting: 12,
+    constraint: 5,
   },
   one_last_call: {
     title: 'ONE LAST CALL',
@@ -357,6 +386,7 @@ export const DEFS: Record<RequestKind, Def> = {
     time: 20,
     danger: 8,
     haunting: 6,
+    constraint: 6,
   },
   hey_selfie2: {
     title: 'CALL IT AGAIN',
@@ -375,6 +405,7 @@ export const DEFS: Record<RequestKind, Def> = {
     time: 18,
     danger: 5,
     haunting: 6,
+    constraint: 8,
   },
 
   one_more_shot: {
@@ -561,6 +592,17 @@ export class RequestSystem {
   private consequenceSeen: string | null = null;
   /** 直近に出した Surface。表面上の繰り返しを避ける（§16） */
   private recentKinds: RequestKind[] = [];
+  /** Dismiss（明示的に降りた）回数と報酬帯ごとの内訳 */
+  dismissedCount = 0;
+  dismissByTier: number[] = [];
+  offeredByTier: number[] = [];
+  onDismiss: ((r: ActiveRequest, sinceOffered: number) => void) | null = null;
+
+  /** Constraint Request を実行中か（§3） */
+  get constraintActive() {
+    return !!this.active && isConstraint(this.active.kind);
+  }
+
   /** ONE LAST CALL は1ランに1回だけ（§23） */
   lastCallOffered = false;
   lastCallTaken = false;
@@ -652,6 +694,9 @@ export class RequestSystem {
     this.consequenceWait = 0;
     this.consequenceSeen = null;
     this.recentKinds = [];
+    this.dismissedCount = 0;
+    this.dismissByTier = [];
+    this.offeredByTier = [];
     this.lastCallOffered = false;
     this.lastCallTaken = false;
     this.lastCallCompleted = false;
@@ -671,17 +716,32 @@ export class RequestSystem {
     this.abandonedChains = 0;
   }
 
-  /** プレイヤーが明示的に断る（[F]）。行動での辞退と同じ扱い */
-  decline() {
-    if (!this.active) return false;
+  /**
+   * Dismiss（§11〜§15）。
+   *
+   * Accept ボタンは無いままだが、「これはやらない」と**明確に降りる**操作は用意する。
+   *   - 報酬なし
+   *   - Viewer / Engagement / Danger / Haunted へのペナルティは一切なし
+   *   - 今の連鎖はそこで終了
+   *   - 次は通常の新規Chain間隔まで待つ（断った直後に別の誘惑を出さない）
+   *
+   * 時間切れの ignored とは別物として記録する。
+   * ignored = 気づかなかった / 他のことをしていた、dismissed = やらないと決めた。
+   */
+  dismiss(sinceOffered: number) {
+    if (!this.active) return null;
     const r = this.active;
     this.active = null;
     this.hold = 0;
-    this.ignoredCount += 1;
+    this.dismissedCount += 1;
+    const tier = rewardTier(r.reward);
+    this.dismissByTier[tier] = (this.dismissByTier[tier] ?? 0) + 1;
     this.abandonLadder();
-    this.cooldown = this.postCooldown;
-    this.onExpire?.(r, false);
-    return true;
+    this.state = 'IDLE';
+    // 断った流れから降りる操作なので、次は通常の間隔まで待つ
+    this.cooldown = randRange(this.interval.min, this.interval.max);
+    this.onDismiss?.(r, sinceOffered);
+    return r;
   }
 
   /** チキンレースの途中で降りた（＝自分で止めた） */
@@ -771,6 +831,8 @@ export class RequestSystem {
     this.cooldown -= dt;
     this.temptationCooldown = Math.max(0, this.temptationCooldown - dt);
     if (this.offeredCount >= this.maxCount || ctx.chasing) return;
+    // 制約を実行中は、通常の新規Chainを始めない（§3）
+    if (this.constraintActive) return;
 
     const t = CONFIG.request.temptation;
     const lc = CONFIG.request.lastCall;
@@ -858,6 +920,8 @@ export class RequestSystem {
       req.title = surface.title;
       req.description = surface.desc;
     }
+    const tier = rewardTier(req.reward);
+    this.offeredByTier[tier] = (this.offeredByTier[tier] ?? 0) + 1;
     this.recentKinds.push(req.kind);
     if (this.recentKinds.length > CONFIG.request.director.recentSurfaceMemory) {
       this.recentKinds.shift();
@@ -1104,6 +1168,28 @@ export class RequestSystem {
     this.completedCount += 1;
     this.active = null;
     this.hold = 0;
+
+    /*
+     * Constraint を守り切ったら、そこで一度きれいに切る（§8 / §10）。
+     *
+     * 制約を終えた直後に別の要求を重ねると、
+     * 「今なにを要求されているのか」が分からなくなる。
+     * 同じラダーへ必ず戻す必要はない。大事なのは1つの誘惑に集中できること。
+     */
+    if (isConstraint(r.kind)) {
+      this.ladder = null;
+      this.chainNext = null;
+      this.chainStep = 0;
+      this.state = 'IDLE';
+      const dcfg = CONFIG.request.director;
+      this.cooldown =
+        randRange(this.interval.min, this.interval.max) +
+        randRange(dcfg.afterReactionPause.min, dcfg.afterReactionPause.max);
+      this.onChainLog?.('constraint_completed', `kind=${r.kind} reward=${reward}`);
+      this.onComplete?.(r, reward, option);
+      return;
+    }
+
     this.longestChain = Math.max(this.longestChain, this.chainStep);
 
     // ONE GHOST MODE：ラダーを一段上げる。
@@ -1283,11 +1369,18 @@ export class RequestSystem {
     // --- 第一段階 ---
     let done = false;
     switch (r.kind) {
+      case 'lights_off': {
+        // ライトを消したまま耐える。守るのはそれだけ（§7 残り時間を必ず出す）
+        const need = DEFS.lights_off.constraint ?? 10;
+        this.hold = ctx.lightsOff ? this.hold + dt : Math.max(0, this.hold - dt);
+        r.progress = clamp01(this.hold / need);
+        done = this.hold >= need;
+        break;
+      }
       case 'go_back':
       case 'look_again':
       case 'one_last_look':
-      case 'selfie_mirror':
-      case 'lights_off': {
+      case 'selfie_mirror': {
         const target = r.targetType ?? 'mirror';
         const d = ctx.pointDistance(target);
         r.progress = clamp01((26 - d) / 22);
