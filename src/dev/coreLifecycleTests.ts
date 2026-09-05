@@ -168,5 +168,87 @@ export function runAll(game?: Game): LifeResult[] {
     );
   }
 
+  // F: 風呂と洗面所を往復してもチャタリングしない（§26, A1）
+  {
+    const f1 = start(d);
+    place(d, SPOTS.bath);
+    hold(d, 30);
+    d.key('KeyE');
+    hold(d, 30);
+    f1.debugOffer('altar_beat');      // 枠を塞いで Offer させない
+    for (let i = 0; i < 4; i++) {
+      place(d, [11.4, 20, 12.5, 20]); // 洗面所へ
+      hold(d, 2 * 60);
+      place(d, SPOTS.bath);           // 風呂へ戻る
+      hold(d, 2 * 60);
+    }
+    const st = f1.kpi().sessions as { started: number; softLost: number; resumed: number; hardLost: number };
+    add(
+      'F 風呂と洗面所の往復でチャタリングしない',
+      st.started === 1 && st.hardLost === 0,
+      `started=${st.started} soft_lost=${st.softLost} resumed=${st.resumed} hard_lost=${st.hardLost}` +
+        `（風呂と洗面所は同一エリアなので中断すら起きない）`,
+    );
+  }
+
+  // F2: エリアの外へ一瞬出て戻る。中断して再開する（§9, A3）
+  {
+    const f1 = start(d);
+    place(d, SPOTS.bath);
+    hold(d, 30);
+    d.key('KeyE');
+    hold(d, 30);
+    f1.debugOffer('altar_beat');
+    place(d, [0, 4, 0, 0]);           // 廊下へ一瞬出る（エリア外・でも近い）
+    hold(d, 3 * 60);
+    place(d, SPOTS.bath);             // 戻る
+    hold(d, 2 * 60);
+    const st = f1.kpi().sessions as { started: number; softLost: number; resumed: number; hardLost: number };
+    add(
+      'F2 一瞬エリアを出て戻れば同じSessionが続く',
+      st.started === 1 && st.softLost > 0 && st.resumed > 0 && st.hardLost === 0,
+      `started=${st.started} soft_lost=${st.softLost} resumed=${st.resumed} hard_lost=${st.hardLost}`,
+    );
+  }
+
+  // G: 完全にエリアを離れたら1回だけ Hard Lost（§27, A2）
+  {
+    const f1 = start(d);
+    place(d, SPOTS.bath);
+    hold(d, 30);
+    d.key('KeyE');
+    hold(d, 30);
+    f1.debugOffer('altar_beat');
+    place(d, [11.4, 20, 12.5, 20]);   // 洗面所
+    hold(d, 60);
+    place(d, [0, 4, 0, 0]);           // 廊下
+    hold(d, 60);
+    place(d, SPOTS.ldk);              // LDK
+    hold(d, 4 * 60);
+    const st = f1.kpi().sessions as { started: number; hardLost: number };
+    const reasons = f1.kpi().coreMissReasons as Record<string, number>;
+    add(
+      'G エリアを離れたら Hard Lost は1回だけ',
+      st.hardLost === 1,
+      `hard_lost=${st.hardLost}  内訳=${JSON.stringify(reasons)}`,
+    );
+  }
+
+  // H: 仏間の中で移動しても Session が続く（§29, A4）
+  {
+    const f1 = start(d);
+    place(d, SPOTS.altar);
+    hold(d, 30);
+    d.key('KeyE');
+    hold(d, 30);
+    f1.debugOffer('sit_dont_move');
+    place(d, [-13.0, 21, -14.4, 21]); // 遺影の前へ
+    hold(d, 3 * 60);
+    place(d, SPOTS.altar);
+    hold(d, 2 * 60);
+    const st = f1.kpi().sessions as { started: number; hardLost: number };
+    add('H 仏間の中の移動では切れない', st.hardLost === 0, `started=${st.started} hard_lost=${st.hardLost}`);
+  }
+
   return out;
 }

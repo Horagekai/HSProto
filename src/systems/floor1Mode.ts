@@ -13,6 +13,7 @@ import { FLOOR1_POOL,
   type SituationSetup,
   type CoreOpportunity,
   type CoreSource,
+  CORE_AREAS,
 } from './floor1';
 import { FLOOR1_OBJECTS, roomAt, type Floor1Room } from '../world/floor1Level';
 import { HorrorDirector, type GhostAction, type HorrorEventDef, type RunPhase } from './horrorDirector';
@@ -122,6 +123,19 @@ export interface ActiveRequest {
 }
 
 const SOFA = { x: -9.3, z: -8 };
+
+/**
+ * 仏間へ気づかせるコメント。指示ではなく雑談として書く。
+ * 「行け」と言わせない。
+ */
+const BUTSUMA_HINTS = [
+  "what's that room on the left",
+  'left door looks busted',
+  'why is that one broken',
+  'tatami room?',
+  'something off about that doorway',
+  'the left one is open',
+];
 
 /** 「振り向く / 振り向くな」系 */
 const TURN_FAMILY = new Set([
@@ -258,7 +272,15 @@ export class Floor1Mode {
   private cores: CoreOpportunity[] = [];
   /** 電話が鳴り止むまでの残り秒数 */
   private phoneRingLeft = 0;
+  /** 仏間へ気づかせるコメント。気づいたら止める */
+  private butsumaSeen = false;
+  private guideTimer = 8;
+  private guideShown = 0;
   coreMissReasons: Record<string, number> = {};
+  private sessionSeq = 0;
+  private reopenBlock: Record<string, number> = {};
+  /** Session の統計。出入りは失敗ではない（§21-24） */
+  sessionStats = { started: 0, softLost: 0, resumed: 0, hardLost: 0, resolved: 0 };
   /** 明確な機会を逃した回数 */
   coreMisses = 0;
   /** Core が Filler を蹴った直後、短時間 Core を優先する（§41-43） */
@@ -381,7 +403,13 @@ export class Floor1Mode {
     this.interrupted.clear();
     this.cores = [];
     this.phoneRingLeft = 0;
+    this.butsumaSeen = false;
+    this.guideTimer = 8;
+    this.guideShown = 0;
     this.coreMissReasons = {};
+    this.sessionSeq = 0;
+    this.reopenBlock = {};
+    this.sessionStats = { started: 0, softLost: 0, resumed: 0, hardLost: 0, resolved: 0 };
     this.coreMisses = 0;
     this.coreReservation = null;
     this.opportunityCounts = { altar: 0, bath: 0, phone: 0, ghost: 0 };
@@ -532,7 +560,15 @@ export class Floor1Mode {
   }
 
   private discover(id: string, label: string, likes: number) {
-    if (id === 'bath') this.opportunities.bathDiscovered += 1;
+    // 視聴者は配信を見ている。プレイヤーが [E] を押さなくても、見つけた時点で口は出せる。
+    // ここが対象ごとにバラバラだったせいで、仏壇だけ機会が開かない Run があった。
+    if (id === 'bath') {
+      this.opportunities.bathDiscovered += 1;
+      this.openCore('bath', ['bath_sip', 'bath_sip2']);
+    }
+    if (id === 'altar') {
+      this.openCore('altar', ['altar_beat', 'altar_again']);
+    }
     if (id === 'ghost') {
       this.opportunities.ghostDiscovered += 1;
       this.openCore('ghost', ['ghost_closer', 'ghost_selfie', 'ghost_frame']);
@@ -1499,6 +1535,10 @@ export class Floor1Mode {
     const cfg = CONFIG.floor1.coreOpportunity;
     const existing = this.cores.find((c) => c.source === source && c.state !== 'expired');
     if (existing) return;
+    // Session が終わった直後の連打を防ぐ（§19-20）
+    if ((this.reopenBlock[source] ?? 0) > this.elapsed) return;
+    this.sessionSeq += 1;
+    this.sessionStats.started += 1;
     const timeSensitive = source === 'phone';
     this.cores.push({
       source,
@@ -1512,10 +1552,15 @@ export class Floor1Mode {
       strength: 1,
       urgency: 0,
       preferred,
+      sessionId: this.sessionSeq,
+      lastRelevantAt: this.elapsed,
+      suspendedAt: 0,
+      softLosts: 0,
+      resumes: 0,
     });
     this.opportunityCounts[source] += 1;
     this.d.log(
-      'core_opportunity_started',
+      'core_session_started',
       `source=${source} kind=${timeSensitive ? 'timeSensitive' : 'persistent'} budget=${cfg.budget[source]} preferred=${preferred.join('|')}`,
     );
     this.interruptForOpportunity(`core_${source}`);
@@ -1526,32 +1571,48 @@ export class Floor1Mode {
    * まだ意味があるか。無ければ理由つきで期限切れにする（§9, §16, §56-60）。
    * Pause から戻ったときも必ずここを通す。
    */
-  private coreContextLost(c: CoreOpportunity): string | null {
+  private coreContextLost(c: CoreOpportunity): { level: 'ok' | 'soft' | 'hard'; reason: string } {
+    const ok = { level: 'ok' as const, reason: '' };
+    const area = CORE_AREAS[c.source] ?? [];
+    const room = this.room();
+    const inArea = area.includes(room);
+
     switch (c.source) {
       case 'phone': {
         const st = this.objects.get('phone')?.state;
-        if (st === 'answered') return 'already_completed';
-        if (st !== 'ringing') return 'phone_stopped_ringing';
-        return null;
+        if (st === 'answered') return { level: 'hard', reason: 'already_completed' };
+        // 鳴っている限り、部屋を出ても機会は生きている（§30）
+        if (st !== 'ringing') return { level: 'hard', reason: 'phone_stopped_ringing' };
+        return ok;
       }
       case 'bath': {
-        if (this.bathSips > 0) return 'already_completed';
-        // 洗面所・風呂から出て、戻ってくる気配もない
-        const room = this.room();
-        if (room !== 'bath' && room !== 'washroom' && this.objDistance('bath') > 14) return 'left_room';
-        return null;
+        if (this.bathSips > 0) return { level: 'hard', reason: 'already_completed' };
+        if (inArea) return ok;
+        // 風呂・洗面所エリアの外。遠ければ本当に離れた
+        if (this.objDistance('bath') > CONFIG.floor1.coreOpportunity.hardDistance) {
+          return { level: 'hard', reason: 'left_area' };
+        }
+        return { level: 'soft', reason: 'left_room' };
       }
       case 'altar': {
-        if (this.completedIds.has('altar_beat')) return 'already_completed';
-        if (this.room() !== 'butsuma' && this.objDistance('altar') > 14) return 'left_room';
-        return null;
+        if (this.completedIds.has('altar_beat')) return { level: 'hard', reason: 'already_completed' };
+        if (inArea) return ok;
+        if (this.objDistance('altar') > CONFIG.floor1.coreOpportunity.hardDistance) {
+          return { level: 'hard', reason: 'left_area' };
+        }
+        return { level: 'soft', reason: 'left_room' };
       }
       case 'ghost': {
-        if (this.ghost === 'chasing') return 'run_phase_changed';
-        if (this.objDistance('ghost') > 26) return 'target_lost';
-        return null;
+        if (this.ghost === 'chasing') return { level: 'hard', reason: 'run_phase_changed' };
+        const d = this.objDistance('ghost');
+        if (d > 30) return { level: 'hard', reason: 'target_lost' };
+        // 一瞬視界から外れただけなら中断
+        const g = this.ghost === 'seated' ? SOFA : this.d.ghostPos();
+        if (!this.d.isVisible(g.x, g.z, 1.3) || d > 18) return { level: 'soft', reason: 'out_of_sight' };
+        return ok;
       }
     }
+    return ok;
   }
 
   /**
@@ -1562,7 +1623,6 @@ export class Floor1Mode {
    */
   private updateCores(dt: number) {
     const cfg = CONFIG.floor1.coreOpportunity;
-    // 今 Offer できる状態か
     const blocked = this.active
       ? 'active_request'
       : this.pendingDef
@@ -1575,25 +1635,57 @@ export class Floor1Mode {
       if (c.state === 'expired' || c.state === 'resolved') continue;
       c.wallTime += dt;
 
-      const lost = this.coreContextLost(c);
-      if (lost) {
-        this.expireCore(c, lost);
+      const ctx = this.coreContextLost(c);
+
+      // --- HARD LOST。ここで初めて「逃した」と数える（§10-11）---
+      if (ctx.level === 'hard') {
+        this.endSession(c, ctx.reason);
         continue;
       }
 
+      // --- SOFT LOST。隣の部屋へ出ただけ。予算は減らさない（§6-8）---
+      if (ctx.level === 'soft') {
+        if (c.state !== 'suspended') {
+          c.state = 'suspended';
+          c.suspendedAt = this.elapsed;
+          c.softLosts += 1;
+          this.sessionStats.softLost += 1;
+          this.d.log(
+            'core_session_suspended',
+            `source=${c.source} session=${c.sessionId} reason=${ctx.reason}`,
+          );
+        }
+        // 戻ってこないまま猶予を過ぎたら、そこで初めて終わり
+        if (this.elapsed - c.suspendedAt > cfg.suspendGrace) {
+          this.endSession(c, 'not_returning');
+        }
+        continue;
+      }
+
+      // --- 戻ってきた。同じ Session を続ける（§9）---
+      if (c.state === 'suspended') {
+        c.resumes += 1;
+        this.sessionStats.resumed += 1;
+        c.state = 'active';
+        this.d.log(
+          'core_session_resumed',
+          `source=${c.source} session=${c.sessionId} away=${(this.elapsed - c.suspendedAt).toFixed(1)}s resumes=${c.resumes}`,
+        );
+        this.d.log('core_opportunity_revalidated', `source=${c.source} ok=true`);
+      }
+      c.lastRelevantAt = this.elapsed;
+
       if (c.kind === 'timeSensitive') {
-        // 世界の時間は止まらない。鳴っている間だけ有効で、その代わり急かす（§33, §82）
         c.state = 'active';
         c.eligibleActiveTime += dt;
         const left = this.phoneRingLeft;
         c.urgency = left > 10 ? cfg.urgency.phoneFar : left > 5 ? cfg.urgency.phoneMid : cfg.urgency.phoneNear;
-        // 別Request中に鳴っていたなら、終わった直後に食いつけるよう強めておく
         if (blocked) c.urgency += cfg.urgency.blockedBoost;
         c.strength = 1;
         continue;
       }
 
-      // --- persistent ---
+      // --- persistent。別Request中は Pause（予算を消費しない）---
       if (blocked) {
         if (c.state !== 'paused') {
           c.state = 'paused';
@@ -1609,28 +1701,34 @@ export class Floor1Mode {
           'core_opportunity_resumed',
           `source=${c.source} eligible_active_time=${c.eligibleActiveTime.toFixed(1)} paused=${c.pausedTime.toFixed(1)}`,
         );
-        this.d.log('core_opportunity_revalidated', `source=${c.source} ok=true`);
       }
       c.eligibleActiveTime += dt;
       c.strength = Math.max(0, 1 - c.eligibleActiveTime / c.budget);
-      // 離れそうなら少し急かす（§24）
       c.urgency = c.strength < 0.35 ? cfg.urgency.fading : 0;
-      if (c.eligibleActiveTime >= c.budget) this.expireCore(c, 'timeout');
+      if (c.eligibleActiveTime >= c.budget) this.endSession(c, 'timeout');
     }
 
     this.cores = this.cores.filter((c) => c.state !== 'expired' && c.state !== 'resolved');
     if (this.coreReservation && this.coreReservation.until <= this.elapsed) this.coreReservation = null;
   }
 
-  private expireCore(c: CoreOpportunity, reason: string) {
+  /** Session を終える。Soft Lost の往復はここに来ない */
+  private endSession(c: CoreOpportunity, reason: string) {
     const resolved = c.preferred.some((id) => this.offeredHistory.includes(id));
     c.state = resolved ? 'resolved' : 'expired';
+    this.reopenBlock[c.source] = this.elapsed + CONFIG.floor1.coreOpportunity.reopenCooldown;
+    this.d.log(
+      resolved ? 'core_session_resolved' : 'core_session_ended',
+      `source=${c.source} session=${c.sessionId} reason=${reason} ` +
+        `wall=${c.wallTime.toFixed(1)} eligible=${c.eligibleActiveTime.toFixed(1)} paused=${c.pausedTime.toFixed(1)} ` +
+        `soft_lost=${c.softLosts} resumes=${c.resumes}`,
+    );
     if (resolved) {
-      this.d.log('core_opportunity_resolved', `source=${c.source} reason=${reason}`);
+      this.sessionStats.resolved += 1;
       return;
     }
+    this.sessionStats.hardLost += 1;
     this.coreMisses += 1;
-    // なぜ逃したのかを分けて数える（§75）
     const bucket =
       reason === 'timeout'
         ? c.pausedTime > c.eligibleActiveTime
@@ -1638,13 +1736,8 @@ export class Floor1Mode {
           : 'miss_due_to_selection'
         : reason === 'phone_stopped_ringing'
           ? 'miss_due_to_time_sensitive_expiry'
-          : 'miss_due_to_context';
+          : 'miss_due_to_hard_context_loss';
     this.coreMissReasons[bucket] = (this.coreMissReasons[bucket] ?? 0) + 1;
-    this.d.log(
-      'core_opportunity_expired',
-      `source=${c.source} reason=${reason} bucket=${bucket} ` +
-        `wall_time=${c.wallTime.toFixed(1)} eligible_active_time=${c.eligibleActiveTime.toFixed(1)} paused_time=${c.pausedTime.toFixed(1)}`,
-    );
   }
 
   /**
@@ -2118,6 +2211,7 @@ export class Floor1Mode {
 
     // 電話を鳴らす条件
     this.maybeRingPhone(dt);
+    this.maybeGuideToButsuma(dt);
   }
 
   private phoneTimer = 20;
@@ -2438,6 +2532,38 @@ export class Floor1Mode {
     this.d.log('debug_force', `FORCE_GREED ${kind}`);
   }
 
+  /**
+   * 仏間への導線（Task B §48-51）。
+   *
+   * これは Request ではない。UI 誘導でもマーカーでもない。
+   * 「入ってすぐ左に何かある」に気づく機会を、コメント欄で薄く作るだけ。
+   * 毎 Run 同じ台詞にはしないし、100% では出さない。
+   */
+  private maybeGuideToButsuma(dt: number) {
+    if (this.butsumaSeen) return;
+    if (this.objects.get('altar')?.discovered) {
+      this.butsumaSeen = true;
+      return;
+    }
+    const room = this.room();
+    if (room !== 'entrance' && room !== 'hallway') return;
+    // 仏間の入口（x -2.5, z 19〜22）の近くにいるか
+    const p = this.d.playerPos();
+    const near = Math.hypot(p.x + 2.5, p.z - 20.5) < 12;
+    if (!near) return;
+    this.guideTimer -= dt;
+    if (this.guideTimer > 0) return;
+    this.guideTimer = randRange(14, 26);
+    if (Math.random() > CONFIG.floor1.guidanceChance) return;
+    this.guideShown += 1;
+    if (this.guideShown > 2) {
+      this.butsumaSeen = true;
+      return;
+    }
+    this.d.chatLine(pick(BUTSUMA_HINTS));
+    this.d.log('guidance_comment', `target=butsuma count=${this.guideShown}`);
+  }
+
   /** テスト用。電話を実際の経路と同じように鳴らす */
   debugRingPhone(seconds = 20) {
     this.objects.get('phone')!.discovered = true;
@@ -2451,6 +2577,9 @@ export class Floor1Mode {
   debugStopPhone() {
     this.objects.setState('phone', 'idle');
     this.phoneRingLeft = 0;
+    this.butsumaSeen = false;
+    this.guideTimer = 8;
+    this.guideShown = 0;
     this.phoneTimer = 999;
   }
 
@@ -2571,6 +2700,10 @@ export class Floor1Mode {
       coreOpportunities: { ...this.opportunityCounts },
       coreMisses: this.coreMisses,
       coreMissReasons: { ...this.coreMissReasons },
+      sessions: { ...this.sessionStats },
+      reengagementRate: this.sessionStats.softLost
+        ? Math.round((this.sessionStats.resumed / this.sessionStats.softLost) * 100)
+        : -1,
       /** Director の成績は Run 数ではなく「機会が何回成立したか」を分母にする（§44-48） */
       coreOfferRates: {
         altar: this.opportunityCounts.altar

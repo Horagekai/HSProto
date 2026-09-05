@@ -773,3 +773,92 @@ Run 数を分母にしない。`altar_beat` が 10Run で 0 件でも、
 ```
 
 これは Level Design / 導線側の指標として分けて持つ。
+
+
+---
+
+## Core Opportunity Session（Soft / Hard Context Loss）
+
+風呂と洗面所を出入りしただけで機会が何度も死に、KPI 上「逃した」と数えられていた。
+
+### Soft と Hard を分ける
+
+```text
+ok    エリア内にいる
+soft  エリアを出たが近い（16m 以内）→ SUSPENDED。予算を減らさない。Miss に数えない
+hard  エリアの外へ十分離れた / 対象が使えなくなった → ENDED。ここで初めて Miss
+```
+
+関連エリアを定義した。風呂と洗面所は同じ場所として扱う。
+
+```text
+altar  butsuma
+bath   bath + washroom
+phone  hallway + entrance（鳴っている限り部屋を出ても有効）
+ghost  ldk
+```
+
+猶予 10秒。戻れば **同じ Session** を続ける（`core_session_resumed`）。
+Session が終わった直後は 8秒だけ再オープンを抑える。
+
+### Session KPI
+
+```text
+started 43  soft_lost 16  resumed 2  hard_lost 10  resolved 32
+逃した理由: hard_context_loss 3 / time_sensitive_expiry 7
+            active_request 0   ← 以前の主因
+```
+
+`SUSPEND → RESUME` は成功したライフサイクルであって Miss ではない。
+
+### 機会の開き方をそろえた
+
+風呂と幽霊は「発見」で機会が開くのに、仏壇だけ「Inspect」を要求していた。
+視聴者は配信を見ているので、見つけた時点で口は出せる。
+
+```text
+Core Offer / Session   altar 8/8 (100%)  bath 10/10 (100%)  phone 8/16 (50%)  ghost 6/9 (67%)
+30シード              PLAY A BEAT 80%  TAKE A SIP 83%  PICK IT UP 93%  GO BACK 73%
+```
+
+---
+
+## 仏間の導線
+
+### 原因はレベルでもDirectorでもなかった
+
+```text
+仏壇 discovered=true  attention=10.4  reengaged=true  interactions=0
+```
+
+ボットは仏間に入り、仏壇を**見て発見もしている**。`[E]` を押していないだけだった。
+遺影と押入れは調べるのに仏壇だけ押さない、というボットの入力癖。
+
+したがって `altar_beat` の weight も core bonus も触っていない（§36, §42）。
+代わりに、上記のとおり **発見だけで機会が開く**ようにした。
+
+### 間取り
+
+```text
+玄関   x -7..7,  z 27..34
+廊下   x -2.5..2.5, z 0..27
+仏間   x -15..-2.5, z 13..27   入口は x=-2.5, z 19〜22
+```
+
+玄関 (0, 31) から仏壇 (-12.5, 15.5) までは 19.9m。
+**本編の「入ってすぐ左」ではなく、廊下を10m進んでから左**になっている。
+玄関からは仏間の入口が見えない。ここは Level Design 側の課題として残す。
+
+### コメントによる薄い誘導
+
+UI 誘導・マーカー・矢印は使わない。仏間をまだ見つけていない状態で
+入口付近にいるときだけ、雑談として流す。
+
+```text
+"what's that room on the left"
+"left door looks busted"
+"why is that one broken"
+```
+
+55% の確率で、1 Run に最大2回。仏壇を見つけたら止まる。
+これは Request ではない（§49）。

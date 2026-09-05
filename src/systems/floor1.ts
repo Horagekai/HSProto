@@ -834,7 +834,18 @@ export const OBJECT_SITUATION_POOLS: Record<string, string[]> = {
  * という瞬間だけ全員の関心がそこへ向く。
  */
 export type CoreSource = 'altar' | 'bath' | 'phone' | 'ghost';
-export type CoreState = 'active' | 'paused' | 'expired' | 'resolved';
+export type CoreState = 'active' | 'suspended' | 'paused' | 'expired' | 'resolved';
+
+/**
+ * 関連する部屋のまとまり（§13）。
+ * 風呂と洗面所を行き来しただけで機会を失うのは、プレイヤーから見て同じ場所にいる。
+ */
+export const CORE_AREAS: Record<string, string[]> = {
+  altar: ['butsuma'],
+  bath: ['bath', 'washroom'],
+  phone: ['hallway', 'entrance'],
+  ghost: ['ldk'],
+};
 
 export interface CoreOpportunity {
   source: CoreSource;
@@ -862,6 +873,16 @@ export interface CoreOpportunity {
   urgency: number;
   preferred: string[];
   pauseReason?: string;
+
+  // --- Session（§3-4, §18）---
+  sessionId: number;
+  /** 最後に文脈が十分成立していた時刻 */
+  lastRelevantAt: number;
+  /** 中断が始まった時刻 */
+  suspendedAt: number;
+  /** 中断と再開の回数。出入りは失敗ではない */
+  softLosts: number;
+  resumes: number;
 }
 
 /** どの Request が Core か（§6） */

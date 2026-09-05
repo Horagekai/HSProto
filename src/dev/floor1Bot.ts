@@ -312,8 +312,14 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
     if (!active && p.selfie) dev.key('KeyC');
 
     // --- 発見したら次の地点へ ---
+    // ただし、その地点をまだ調べていないなら先に調べる。
+    // 調べないまま次へ行くと Core Opportunity が一度も開かない
     if (arrived && dwell > (ROUTE[Math.min(leg, ROUTE.length - 1)]?.dwell ?? 3)) {
-      if (!active) {
+      if (!active && !inspectedHere && pressCd <= 0) {
+        inspectedHere = true;
+        pressCd = 0.8;
+        dev.key('KeyE');
+      } else if (!active && inspectedHere) {
         dwell = 0;
         leg = Math.min(leg + 1, ROUTE.length - 1);
         // 一通り見たら少し戻る（re-engage の検証）

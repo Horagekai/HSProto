@@ -754,6 +754,8 @@ export const CONFIG = {
 
     /** [E] で触れる距離 */
     interactRange: 3.0,
+    /** 仏間へ気づかせるコメントを出す確率。毎回は出さない */
+    guidanceChance: 0.55,
     /** 電話が鳴っている時間 */
     phoneRing: { min: 16, max: 26 },
     /**
@@ -804,6 +806,12 @@ export const CONFIG = {
       budget: { altar: 16, bath: 16, phone: 999, ghost: 14 } as Record<string, number>,
       /** Core が Filler を蹴った後、短時間 Core を優先する */
       reservation: 8,
+      /** 隣の部屋へ出ただけ、を許す猶予（§7） */
+      suspendGrace: 10,
+      /** これ以上離れたら本当に離れた（§10） */
+      hardDistance: 16,
+      /** Session が終わった直後の再オープン抑制（§20） */
+      reopenCooldown: 8,
       /** 今を逃すと機会が消えるものを押す（§25） */
       urgency: { phoneFar: 10, phoneMid: 20, phoneNear: 30, blockedBoost: 8, fading: 6 },
       /** 機会の最中は距離条件をこの倍率まで緩める */
@@ -813,7 +821,7 @@ export const CONFIG = {
        * 対象ごとの基礎点。電話だけ高いのは、鳴っている間しか成立しない
        * 時間制限つきの出来事だから。幽霊はいつでも撮れる。
        */
-      base: { altar: 20, bath: 24, phone: 46, ghost: 20 } as Record<string, number>,
+      base: { altar: 13, bath: 20, phone: 46, ghost: 20 } as Record<string, number>,
       near: 10,
       lookingAt: 8,
       /** 明確な機会を逃すほど次を押す。Hard Guarantee にはしない（§61） */
