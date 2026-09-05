@@ -754,6 +754,8 @@ export const CONFIG = {
 
     /** [E] で触れる距離 */
     interactRange: 3.0,
+    /** 電話が鳴っている時間 */
+    phoneRing: { min: 16, max: 26 },
     /**
      * お膳立ての強さ（§30）。
      * 「何が今それを言わせているか」がはっきりしているほど自然な口出しになる。
@@ -795,8 +797,15 @@ export const CONFIG = {
      * 文脈が成立した時だけ乗る。baseWeight を上げるのとは別物。
      */
     coreOpportunity: {
-      /** 機会が続く秒数（§19, §25, §43） */
-      life: { altar: 16, bath: 16, phone: 12, ghost: 14 } as Record<string, number>,
+      /**
+       * 機会の予算。壁時計ではなく「Offer できた累計時間」で消費する（§3-7）。
+       * 別Requestを処理していただけで機会を失わないようにするため。
+       */
+      budget: { altar: 16, bath: 16, phone: 999, ghost: 14 } as Record<string, number>,
+      /** Core が Filler を蹴った後、短時間 Core を優先する */
+      reservation: 8,
+      /** 今を逃すと機会が消えるものを押す（§25） */
+      urgency: { phoneFar: 10, phoneMid: 20, phoneNear: 30, blockedBoost: 8, fading: 6 },
       /** 機会の最中は距離条件をこの倍率まで緩める */
       reachMult: 2.2,
       /** 対象ごとの基礎点 */
@@ -804,7 +813,7 @@ export const CONFIG = {
        * 対象ごとの基礎点。電話だけ高いのは、鳴っている間しか成立しない
        * 時間制限つきの出来事だから。幽霊はいつでも撮れる。
        */
-      base: { altar: 26, bath: 26, phone: 46, ghost: 20 } as Record<string, number>,
+      base: { altar: 20, bath: 24, phone: 46, ghost: 20 } as Record<string, number>,
       near: 10,
       lookingAt: 8,
       /** 明確な機会を逃すほど次を押す。Hard Guarantee にはしない（§61） */

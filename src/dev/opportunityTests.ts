@@ -68,8 +68,7 @@ export function testPhone(seeds = 20, game?: Game): SeedResult {
     hold(d, 30);
     d.key('KeyE'); // 発見しておく
     hold(d, 30);
-    f1.objects.setState('phone', 'ringing');
-    f1.markPhoneEvent();
+    f1.debugRingPhone(20);
     let got = false;
     for (let i = 0; i < 40 * 60 && !got; i++) {
       hold(d, 1);
@@ -271,8 +270,7 @@ export function testPhoneFar(seeds = 30, game?: Game): SeedResult {
     d.player.position.x = -5.0;
     d.player.position.z = -8;
     hold(d, 60);
-    f1.objects.setState('phone', 'ringing');
-    f1.markPhoneEvent();
+    f1.debugRingPhone(20);
     let got = false;
     let sawAny = false;
     for (let i = 0; i < 30 * 60 && !got; i++) {

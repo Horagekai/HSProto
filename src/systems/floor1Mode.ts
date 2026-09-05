@@ -12,6 +12,7 @@ import { FLOOR1_POOL,
   type GhostState,
   type SituationSetup,
   type CoreOpportunity,
+  type CoreSource,
 } from './floor1';
 import { FLOOR1_OBJECTS, roomAt, type Floor1Room } from '../world/floor1Level';
 import { HorrorDirector, type GhostAction, type HorrorEventDef, type RunPhase } from './horrorDirector';
@@ -255,11 +256,16 @@ export class Floor1Mode {
   private interrupted = new Set<string>();
   /** 今 Viewer の関心が向いている対象 */
   private cores: CoreOpportunity[] = [];
+  /** 電話が鳴り止むまでの残り秒数 */
+  private phoneRingLeft = 0;
+  coreMissReasons: Record<string, number> = {};
   /** 明確な機会を逃した回数 */
   coreMisses = 0;
   /** Core が Filler を蹴った直後、短時間 Core を優先する（§41-43） */
   private coreReservation: { source: string; until: number } | null = null;
   opportunityCounts = { altar: 0, bath: 0, phone: 0, ghost: 0 };
+  /** どの部屋に入ったか。Director の成績とは分けて見る */
+  roomVisits: Record<string, number> = {};
   /** Offer 直前の再評価で捨てた候補の数 */
   cancelled = 0;
   /**
@@ -374,9 +380,12 @@ export class Floor1Mode {
     this.lastCompleted = null;
     this.interrupted.clear();
     this.cores = [];
+    this.phoneRingLeft = 0;
+    this.coreMissReasons = {};
     this.coreMisses = 0;
     this.coreReservation = null;
     this.opportunityCounts = { altar: 0, bath: 0, phone: 0, ghost: 0 };
+    this.roomVisits = {};
     this.cancelled = 0;
     this.funnel = {
       checked: 0,
@@ -1486,46 +1495,156 @@ export class Floor1Mode {
    * 仏壇を調べて一歩下がっただけで PLAY A BEAT が消えるのが、
    * 人間プレイで一度も出なかった原因だった。
    */
-  private openCore(source: 'altar' | 'bath' | 'phone' | 'ghost', preferred: string[]) {
+  private openCore(source: CoreSource, preferred: string[]) {
     const cfg = CONFIG.floor1.coreOpportunity;
-    const existing = this.cores.find((c) => c.source === source);
-    if (existing && existing.expiresAt > this.elapsed) return;
-    const life = cfg.life[source] ?? 14;
+    const existing = this.cores.find((c) => c.source === source && c.state !== 'expired');
+    if (existing) return;
+    const timeSensitive = source === 'phone';
     this.cores.push({
       source,
+      kind: timeSensitive ? 'timeSensitive' : 'persistent',
+      state: 'active',
       startedAt: this.elapsed,
-      expiresAt: this.elapsed + life,
+      wallTime: 0,
+      eligibleActiveTime: 0,
+      pausedTime: 0,
+      budget: cfg.budget[source] ?? 14,
       strength: 1,
+      urgency: 0,
       preferred,
     });
     this.opportunityCounts[source] += 1;
     this.d.log(
       'core_opportunity_started',
-      `source=${source} preferred=${preferred.join('|')} life=${life}`,
+      `source=${source} kind=${timeSensitive ? 'timeSensitive' : 'persistent'} budget=${cfg.budget[source]} preferred=${preferred.join('|')}`,
     );
-    // 待機中の Filler を捨てて考え直す（§39-42）
     this.interruptForOpportunity(`core_${source}`);
-    this.coreReservation = { source, until: this.elapsed + CONFIG.floor1.coreOpportunity.life[source] };
+    this.coreReservation = { source, until: this.elapsed + cfg.reservation };
   }
 
-  /** 機会の寿命管理。切れたら「逃した」として数える（§59-62） */
-  private updateCores() {
-    for (const c of this.cores) {
-      const span = c.expiresAt - c.startedAt;
-      c.strength = Math.max(0, 1 - (this.elapsed - c.startedAt) / span);
-    }
-    const expired = this.cores.filter((c) => c.expiresAt <= this.elapsed);
-    for (const c of expired) {
-      const resolved = c.preferred.some((id) => this.offeredHistory.includes(id));
-      if (!resolved) {
-        this.coreMisses += 1;
-        this.d.log('core_opportunity_expired', `source=${c.source} resolved=false misses=${this.coreMisses}`);
-      } else {
-        this.d.log('core_opportunity_resolved', `source=${c.source}`);
+  /**
+   * まだ意味があるか。無ければ理由つきで期限切れにする（§9, §16, §56-60）。
+   * Pause から戻ったときも必ずここを通す。
+   */
+  private coreContextLost(c: CoreOpportunity): string | null {
+    switch (c.source) {
+      case 'phone': {
+        const st = this.objects.get('phone')?.state;
+        if (st === 'answered') return 'already_completed';
+        if (st !== 'ringing') return 'phone_stopped_ringing';
+        return null;
+      }
+      case 'bath': {
+        if (this.bathSips > 0) return 'already_completed';
+        // 洗面所・風呂から出て、戻ってくる気配もない
+        const room = this.room();
+        if (room !== 'bath' && room !== 'washroom' && this.objDistance('bath') > 14) return 'left_room';
+        return null;
+      }
+      case 'altar': {
+        if (this.completedIds.has('altar_beat')) return 'already_completed';
+        if (this.room() !== 'butsuma' && this.objDistance('altar') > 14) return 'left_room';
+        return null;
+      }
+      case 'ghost': {
+        if (this.ghost === 'chasing') return 'run_phase_changed';
+        if (this.objDistance('ghost') > 26) return 'target_lost';
+        return null;
       }
     }
-    this.cores = this.cores.filter((c) => c.expiresAt > this.elapsed);
+  }
+
+  /**
+   * 機会の寿命管理（§3-16）。
+   *
+   * **壁時計では数えない。** Offer できた累計時間で数える。
+   * 別のリクエストを処理していただけで機会を失うのは、Viewer の都合ではなく内部都合。
+   */
+  private updateCores(dt: number) {
+    const cfg = CONFIG.floor1.coreOpportunity;
+    // 今 Offer できる状態か
+    const blocked = this.active
+      ? 'active_request'
+      : this.pendingDef
+        ? 'pending_request'
+        : this.ghost === 'chasing'
+          ? 'chase'
+          : null;
+
+    for (const c of this.cores) {
+      if (c.state === 'expired' || c.state === 'resolved') continue;
+      c.wallTime += dt;
+
+      const lost = this.coreContextLost(c);
+      if (lost) {
+        this.expireCore(c, lost);
+        continue;
+      }
+
+      if (c.kind === 'timeSensitive') {
+        // 世界の時間は止まらない。鳴っている間だけ有効で、その代わり急かす（§33, §82）
+        c.state = 'active';
+        c.eligibleActiveTime += dt;
+        const left = this.phoneRingLeft;
+        c.urgency = left > 10 ? cfg.urgency.phoneFar : left > 5 ? cfg.urgency.phoneMid : cfg.urgency.phoneNear;
+        // 別Request中に鳴っていたなら、終わった直後に食いつけるよう強めておく
+        if (blocked) c.urgency += cfg.urgency.blockedBoost;
+        c.strength = 1;
+        continue;
+      }
+
+      // --- persistent ---
+      if (blocked) {
+        if (c.state !== 'paused') {
+          c.state = 'paused';
+          c.pauseReason = blocked;
+          this.d.log('core_opportunity_paused', `source=${c.source} reason=${blocked}`);
+        }
+        c.pausedTime += dt;
+        continue;
+      }
+      if (c.state === 'paused') {
+        c.state = 'active';
+        this.d.log(
+          'core_opportunity_resumed',
+          `source=${c.source} eligible_active_time=${c.eligibleActiveTime.toFixed(1)} paused=${c.pausedTime.toFixed(1)}`,
+        );
+        this.d.log('core_opportunity_revalidated', `source=${c.source} ok=true`);
+      }
+      c.eligibleActiveTime += dt;
+      c.strength = Math.max(0, 1 - c.eligibleActiveTime / c.budget);
+      // 離れそうなら少し急かす（§24）
+      c.urgency = c.strength < 0.35 ? cfg.urgency.fading : 0;
+      if (c.eligibleActiveTime >= c.budget) this.expireCore(c, 'timeout');
+    }
+
+    this.cores = this.cores.filter((c) => c.state !== 'expired' && c.state !== 'resolved');
     if (this.coreReservation && this.coreReservation.until <= this.elapsed) this.coreReservation = null;
+  }
+
+  private expireCore(c: CoreOpportunity, reason: string) {
+    const resolved = c.preferred.some((id) => this.offeredHistory.includes(id));
+    c.state = resolved ? 'resolved' : 'expired';
+    if (resolved) {
+      this.d.log('core_opportunity_resolved', `source=${c.source} reason=${reason}`);
+      return;
+    }
+    this.coreMisses += 1;
+    // なぜ逃したのかを分けて数える（§75）
+    const bucket =
+      reason === 'timeout'
+        ? c.pausedTime > c.eligibleActiveTime
+          ? 'miss_due_to_active_request'
+          : 'miss_due_to_selection'
+        : reason === 'phone_stopped_ringing'
+          ? 'miss_due_to_time_sensitive_expiry'
+          : 'miss_due_to_context';
+    this.coreMissReasons[bucket] = (this.coreMissReasons[bucket] ?? 0) + 1;
+    this.d.log(
+      'core_opportunity_expired',
+      `source=${c.source} reason=${reason} bucket=${bucket} ` +
+        `wall_time=${c.wallTime.toFixed(1)} eligible_active_time=${c.eligibleActiveTime.toFixed(1)} paused_time=${c.pausedTime.toFixed(1)}`,
+    );
   }
 
   /**
@@ -1938,8 +2057,9 @@ export class Floor1Mode {
     if (room !== this.lastRoom) {
       this.lastRoom = room;
       this.roomChangedAt = this.elapsed;
+      this.roomVisits[room] = (this.roomVisits[room] ?? 0) + 1;
     }
-    this.updateCores();
+    this.updateCores(dt);
     this.updateActionUnlock();
     this.updateHold(dt, input.holdingE);
     this.evaluate(dt, input);
@@ -2009,6 +2129,14 @@ export class Floor1Mode {
   private maybeRingPhone(dt: number) {
     const st = this.objects.get('phone');
     if (!st || !st.discovered) return;
+    if (st.state === 'ringing') {
+      this.phoneRingLeft -= dt;
+      if (this.phoneRingLeft <= 0) {
+        this.objects.setState('phone', 'idle');
+        this.d.log('subject_state_changed', 'subject=phone old=ringing new=idle');
+      }
+      return;
+    }
     if (st.state !== 'idle' && st.state !== 'normal') return;
     this.phoneTimer -= dt;
     if (this.phoneTimer > 0) return;
@@ -2020,6 +2148,8 @@ export class Floor1Mode {
       return;
     }
     this.phoneTimer = randRange(45, 80);
+    // 鳴り続けはしない。鳴っている間だけが機会（§34, §82）
+    this.phoneRingLeft = randRange(CONFIG.floor1.phoneRing.min, CONFIG.floor1.phoneRing.max);
     this.objects.setState('phone', 'ringing');
     this.markPhoneEvent();
     this.d.sfxPhone(this.objDistance('phone'));
@@ -2308,6 +2438,22 @@ export class Floor1Mode {
     this.d.log('debug_force', `FORCE_GREED ${kind}`);
   }
 
+  /** テスト用。電話を実際の経路と同じように鳴らす */
+  debugRingPhone(seconds = 20) {
+    this.objects.get('phone')!.discovered = true;
+    this.objects.setState('phone', 'ringing');
+    this.phoneRingLeft = seconds;
+    this.phoneTimer = 999;
+    this.markPhoneEvent();
+  }
+
+  /** テスト用。鳴り止ませる */
+  debugStopPhone() {
+    this.objects.setState('phone', 'idle');
+    this.phoneRingLeft = 0;
+    this.phoneTimer = 999;
+  }
+
   /** UI 確認とテスト用。指定のリクエストをその場で提示する */
   debugOffer(id: string) {
     const def = FLOOR1_POOL.find((x) => x.id === id);
@@ -2424,6 +2570,24 @@ export class Floor1Mode {
       opportunities: { ...this.opportunities },
       coreOpportunities: { ...this.opportunityCounts },
       coreMisses: this.coreMisses,
+      coreMissReasons: { ...this.coreMissReasons },
+      /** Director の成績は Run 数ではなく「機会が何回成立したか」を分母にする（§44-48） */
+      coreOfferRates: {
+        altar: this.opportunityCounts.altar
+          ? Math.round((this.offeredHistory.filter((x) => x.startsWith('altar_')).length ? 1 : 0) * 100)
+          : -1,
+        bath: this.opportunityCounts.bath
+          ? Math.round((this.offeredHistory.some((x) => x.startsWith('bath_')) ? 1 : 0) * 100)
+          : -1,
+        phone: this.opportunityCounts.phone
+          ? Math.round((this.offeredHistory.some((x) => x.startsWith('phone_')) ? 1 : 0) * 100)
+          : -1,
+        ghost: this.opportunityCounts.ghost
+          ? Math.round((this.offeredHistory.some((x) => x.startsWith('ghost_')) ? 1 : 0) * 100)
+          : -1,
+      },
+      /** Level Design 側の指標。Director とは分けて見る（§46-47） */
+      visits: { ...this.roomVisits },
       offerTimes: [...this.offerTimes],
       objectRequestsOffered: this.objectRequestsOffered,
       situationRequestsOffered: this.situationRequestsOffered,

@@ -141,8 +141,7 @@ export function runAll(game?: Game): EligResult[] {
     hold(d, 40);
     d.key('KeyE');
     hold(d, 40);
-    f1.objects.setState('phone', 'ringing');
-    f1.markPhoneEvent();
+    f1.debugRingPhone(20);
     const c = candidates(d, f1);
     add(
       'F 電話が鳴ったら PICK IT UP が高い。状況も候補に残る',

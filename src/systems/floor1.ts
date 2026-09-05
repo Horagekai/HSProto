@@ -833,14 +833,35 @@ export const OBJECT_SITUATION_POOLS: Record<string, string[]> = {
  * 電話が鳴る・汚い風呂を見つける・仏壇を調べる・幽霊を見つける、
  * という瞬間だけ全員の関心がそこへ向く。
  */
+export type CoreSource = 'altar' | 'bath' | 'phone' | 'ghost';
+export type CoreState = 'active' | 'paused' | 'expired' | 'resolved';
+
 export interface CoreOpportunity {
-  source: 'altar' | 'bath' | 'phone' | 'ghost';
+  source: CoreSource;
+  /**
+   * persistent    そこに在り続けるもの。別Request中は待てる（仏壇・風呂・幽霊）
+   * timeSensitive 今を逃すと機会自体が消える（鳴っている電話）
+   */
+  kind: 'persistent' | 'timeSensitive';
+  state: CoreState;
   startedAt: number;
-  expiresAt: number;
-  /** 0..1。時間が経つほど弱くなる */
+  /** 実時間 */
+  wallTime: number;
+  /**
+   * **RequestDirector が実際に Offer できた累計時間。**
+   * 壁時計ではなくこれで寿命を数える。
+   * 別Requestを処理していただけで機会を失うのは、内部都合であって世界の都合ではない。
+   */
+  eligibleActiveTime: number;
+  pausedTime: number;
+  /** eligibleActiveTime がこれを超えたら期限切れ */
+  budget: number;
+  /** 0..1。残り予算 */
   strength: number;
-  /** この機会で出したいリクエスト */
+  /** 今を逃すとどれくらい取り返しがつかないか */
+  urgency: number;
   preferred: string[];
+  pauseReason?: string;
 }
 
 /** どの Request が Core か（§6） */
@@ -1020,7 +1041,9 @@ export class Floor1Director {
       if (d === undefined) return 'no_distance';
       // Core Opportunity の最中は、少し離れても関心は続いている（§19, §25）。
       // 仏壇を調べて一歩下がっただけで PLAY A BEAT が消えるのは不自然。
-      const core = ctx.coreOpportunities.find((c) => c.preferred.includes(def.id));
+      const core = ctx.coreOpportunities.find(
+        (c) => c.state !== 'expired' && c.preferred.includes(def.id),
+      );
       const reach = core && !def.noCoreReach ? CONFIG.floor1.coreOpportunity.reachMult : 1;
       if (def.maxDistance !== undefined && d > def.maxDistance * slack * reach) return 'too_far';
       if (def.minDistance !== undefined && d < def.minDistance) return 'too_close';
@@ -1207,11 +1230,19 @@ export class Floor1Director {
    */
   private coreOpportunity(def: Floor1RequestDef, ctx: Floor1Context, reasons: string[]) {
     const cfg = CONFIG.floor1.coreOpportunity;
-    const op = ctx.coreOpportunities.find((c) => c.preferred.includes(def.id));
+    const op = ctx.coreOpportunities.find(
+      (c) => c.state !== 'expired' && c.preferred.includes(def.id),
+    );
     if (!op) return 0;
 
     let s = cfg.base[op.source] * op.strength;
     reasons.push(`core:${op.source}+${s.toFixed(0)}`);
+    // 今を逃すと機会自体が消えるものを優先する（§18-25）。
+    // 重要度ではなく緊急度。幽霊はいつでも撮れるが、電話は鳴り止む。
+    if (op.urgency > 0) {
+      s += op.urgency;
+      reasons.push(`urgency+${op.urgency.toFixed(0)}`);
+    }
 
     // 近い / 見ている なら、もっと自然
     if (def.object) {

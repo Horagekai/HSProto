@@ -692,3 +692,84 @@ TAKE A SIP             25/30 (83%)   他: sit_turn / sit_look_behind
 | Object : Situation | 44 : 74 | **54 : 57** |
 | 最長の無音 | 51.3s | 46.4s |
 | Core の内訳 | — | bath_sip 10 / phone_answer 7 / phone_return 6 / ghost_refind 6 / phone_listen 6 / altar_beat 3 |
+
+
+---
+
+## Core Opportunity Lifecycle / Urgency
+
+### 1. 壁時計で腐らせない
+
+風呂を見つけているのに、**別のリクエストを処理していただけ**で興味が消えていた。
+これは世界の都合ではなく内部都合。
+
+```text
+budget を消費するのは「RequestDirector が実際に Offer できた時間」だけ
+別Request中 / Pending中 / Chase中 は Pause
+```
+
+実測（Test A）:
+
+```text
+wall_time 20.5s  eligible_active_time 0.5s  paused_time 20.0s
+```
+
+20秒間ずっと別のリクエストが走っていても、風呂の機会は 0.5秒しか減らない。
+
+### 2. Persistent と Time-Sensitive
+
+| | 例 | 別Request中 | 期限 |
+| --- | --- | --- | --- |
+| persistent | 仏壇 / 風呂 / 幽霊 | Pause して待つ | Offer できた累計 14〜16秒 |
+| timeSensitive | 鳴っている電話 | Pause しない | 鳴り止んだら消える |
+
+電話だけ Pause しないのは、世界の時間が止まらないから。
+その代わり **Urgency** を持ち、塞がっている間はさらに上がる。
+
+```text
+残り >10秒  +10
+残り 5〜10  +20
+残り <5     +30
+別Request中 さらに +8
+```
+
+### 3. 意味で死ぬ
+
+```text
+phone   鳴り止んだ / 取った        → phone_stopped_ringing / already_completed
+bath    洗面所・風呂を離れた       → left_room
+altar   仏間を離れた / 鳴らし終えた → left_room / already_completed
+ghost   追跡が始まった / 見失った   → run_phase_changed / target_lost
+```
+
+Pause から戻るときは必ず再検証する（`core_opportunity_revalidated`）。
+
+### 4. 実行中のリクエストは中断しない
+
+電話が鳴っても `PLAY A BEAT` の HOLD は続く。
+終わった直後に、上がった Urgency で電話へ食いつく。
+
+### 5. 逃した理由の内訳
+
+```text
+Before  miss_due_to_active_request が主因
+After   miss_due_to_active_request 0
+        miss_due_to_context 10 / time_sensitive_expiry 8 / selection 2
+```
+
+### 6. KPI の分母を機会にする
+
+```text
+Core Offer / Opportunity   bath 10/19 (53%)  phone 17/26 (65%)  ghost 5/8 (63%)
+30シード（機会を確実に踏ませた場合）
+  PLAY A BEAT 90% / TAKE A SIP 77% / PICK IT UP 87% / GO BACK AND ANSWER IT 87%
+```
+
+Run 数を分母にしない。`altar_beat` が 10Run で 0 件でも、
+**ボットが仏間に入っても仏壇を Inspect しなかった**のが理由であり、Director の問題ではない。
+
+```text
+仏間へ入った Run 7/10   仏壇を Inspect した回数 0
+```
+
+これは Level Design / 導線側の指標として分けて持つ。
