@@ -604,3 +604,91 @@ KEEP IN FRAME   見えていない幽霊への提示 0/15
 ```text
 room 54 / setup 38 / nearby_object 31 / recent_object 29 / object 11
 ```
+
+
+---
+
+## Core Object Request Priority
+
+### 1. altar_beat が一度も出なかった原因
+
+Eligibility でも Score でもなく、**距離**だった。
+
+```text
+altar_beat  maxDistance 3.2
+```
+
+仏壇の 2.3m に立てば `altar_beat:74` で候補に入り、11秒後に提示される（実測）。
+だが Inspect できる距離が 3.0m なので、調べて一歩下がっただけで候補ごと消える。
+機会が「対象の前に立っている間だけ」だったのが原因。
+
+### 2. Core Opportunity を「窓」にする
+
+```text
+altar / bath  16秒
+phone         12秒
+ghost         14秒
+```
+
+窓の間は距離条件を 2.2 倍まで緩める。ただし `phone_answer` は例外
+（遠いときは `GO BACK AND ANSWER IT` が担当するため `noCoreReach`）。
+
+### 3. bath_sip 84 に STAY HERE 26 が勝った経路
+
+上位を素の重み付き抽選にかけていたため、84 対 26 でも 26 が 24% で勝っていた。
+数学的には正しいが、ゲームとして不自然。
+
+```text
+dominance = bestCore / max(bestOther, 1)
+
+< 1.2      通常の重み付き抽選
+1.2〜1.5   50% で Core
+1.5〜2.0   65% で Core
+2.0+       78% で Core
+```
+
+100% にはしない。電話が鳴っていても「動くな」と言われる Run は残る。
+
+### 4. 電話の近距離 / 遠距離
+
+```text
+PICK IT UP              8m 以内
+GO BACK AND ANSWER IT   8m 以上、40m まで
+```
+
+一度発見していれば Viewer は電話の場所を知っている。
+どちらも「近づく」だけでは完了せず、受話器を取って初めて完了する。
+鳴り止んだら Request も終わる。
+
+電話だけ基礎点が高い（46）のは、**鳴っている間しか成立しない時間制限つきの出来事**だから。
+幽霊はいつでも撮れる。
+
+### 5. Core Miss Protection
+
+窓が resolve されずに切れたら `coreMisses` を増やし、次の機会を押す（1回 +6、上限 +18）。
+Hard Guarantee にはしない。
+
+### 6. ログ
+
+```text
+core_opportunity_started / _expired / _resolved
+core_selection_evaluated  bestCore=bath_sip:84 bestOther=sit_stay_here:26 dominance=3.23 coreProbability=0.78
+core_request_rejected     id=phone_answer reason=too_far room=ldk
+```
+
+### 7. 実測
+
+```text
+PICK IT UP             28/30 (93%)   他: sit_stay_here / sit_turn
+GO BACK AND ANSWER IT  25/30 (83%)   無反応 0
+PLAY A BEAT            28/30 (93%)   他: sit_stay_here / sit_turn
+TAKE A SIP             25/30 (83%)   他: sit_turn / sit_look_behind
+```
+
+10 Run:
+
+| | 前回 | 今回 |
+| --- | --- | --- |
+| Object : Situation | 44 : 74 | **54 : 57** |
+| 最長の無音 | 51.3s | 46.4s |
+| Core の内訳 | — | bath_sip 10 / phone_answer 7 / phone_return 6 / ghost_refind 6 / phone_listen 6 / altar_beat 3 |

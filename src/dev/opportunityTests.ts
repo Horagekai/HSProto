@@ -255,11 +255,88 @@ export function testPortrait(seeds = 15, game?: Game): SeedResult {
   };
 }
 
+/** 電話が遠い（LDK にいる）ときに GO BACK AND ANSWER IT が来るか（§79） */
+export function testPhoneFar(seeds = 30, game?: Game): SeedResult {
+  const d = dev(game);
+  let offered = 0;
+  let nothing = 0;
+  const others: string[] = [];
+  for (let n = 0; n < seeds; n++) {
+    const f1 = start(d);
+    // まず電話を見つけてから、LDK へ移動する
+    place(d, SPOTS.phone);
+    hold(d, 30);
+    d.key('KeyE');
+    hold(d, 30);
+    d.player.position.x = -5.0;
+    d.player.position.z = -8;
+    hold(d, 60);
+    f1.objects.setState('phone', 'ringing');
+    f1.markPhoneEvent();
+    let got = false;
+    let sawAny = false;
+    for (let i = 0; i < 30 * 60 && !got; i++) {
+      hold(d, 1);
+      const rr = f1.requestRuntime();
+      if (rr.active) {
+        sawAny = true;
+        if (rr.id === 'phone_return') got = true;
+        else {
+          others.push(rr.id);
+          break;
+        }
+      }
+    }
+    if (got) offered += 1;
+    if (!sawAny) nothing += 1;
+  }
+  const rate = Math.round((offered / seeds) * 100);
+  return {
+    name: 'A2 電話が遠いと GO BACK AND ANSWER IT',
+    pass: rate >= 45,
+    detail: `${offered}/${seeds} (${rate}%)  無反応 ${nothing}  他: ${[...new Set(others)].join(',') || 'なし'}`,
+  };
+}
+
+/** 風呂を調べたら TAKE A SIP。Filler に横取りされないか（§76-77） */
+export function testBath(seeds = 30, game?: Game): SeedResult {
+  const d = dev(game);
+  let offered = 0;
+  const others: string[] = [];
+  for (let n = 0; n < seeds; n++) {
+    const f1 = start(d);
+    place(d, SPOTS.bath);
+    hold(d, 30);
+    d.key('KeyE');
+    let got = false;
+    for (let i = 0; i < 40 * 60 && !got; i++) {
+      hold(d, 1);
+      const rr = f1.requestRuntime();
+      if (rr.active) {
+        if (rr.id.startsWith('bath_')) got = true;
+        else {
+          others.push(rr.id);
+          break;
+        }
+      }
+    }
+    if (got) offered += 1;
+  }
+  const rate = Math.round((offered / seeds) * 100);
+  return {
+    name: 'B2 風呂を調べたら TAKE A SIP',
+    pass: rate >= 60 && rate <= 95,
+    detail: `${offered}/${seeds} (${rate}%)  他: ${[...new Set(others)].join(',') || 'なし'}`,
+  };
+}
+
 export async function runAll(game?: Game): Promise<SeedResult[]> {
   const out: SeedResult[] = [];
   out.push({ name: 'Runtime build', pass: true, detail: BUILD_ID });
-  out.push(testPhone(20, game));
-  out.push(testAltar(20, game));
+  out.push(testPhone(30, game));
+  out.push(testPhoneFar(30, game));
+  out.push(testAltar(30, game));
+  out.push(testBath(30, game));
   out.push(testBehind(20, game));
   out.push(testChain(12, game));
   out.push(testKeepFrame(15, game));

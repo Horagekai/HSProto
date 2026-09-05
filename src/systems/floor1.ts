@@ -65,6 +65,10 @@ export interface Floor1RequestDef {
   targetName?: string;
   room?: Floor1Room;
   maxDistance?: number;
+  /** これより近いと出さない。遠いとき用の Request に使う */
+  minDistance?: number;
+  /** Core Opportunity 中でも距離を緩めない。遠距離版が別にある Request 用 */
+  noCoreReach?: boolean;
   /** "phone|ringing" のように オブジェクト|状態 */
   requiredState?: string;
   forbiddenState?: string;
@@ -256,15 +260,37 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
   },
   // ---------------- PHONE ----------------
   {
+    // 電話は一度見つけていれば、別の部屋にいても Viewer は場所を知っている（§32-33）
+    id: 'phone_return',
+    label: 'GO BACK AND ANSWER IT',
+    desc: "IT'S STILL RINGING",
+    type: 'action',
+    reward: 4000,
+    riskTier: 3,
+    object: 'phone',
+    targetName: 'THE PHONE',
+    maxDistance: 40,
+    minDistance: 8,
+    requiredState: 'phone|ringing',
+    cooldown: 70,
+    weight: 1.4,
+    time: 26,
+    danger: 4,
+    haunting: 6,
+  },
+  {
     id: 'phone_answer',
     label: 'PICK IT UP',
     desc: '[E] ANSWER THE PHONE',
     type: 'action',
-    reward: 1500,
+    reward: 2000,
     riskTier: 2,
     object: 'phone',
     targetName: 'THE PHONE',
-    maxDistance: 3,
+    // 「取れ」と言えるのは、歩いて行ける距離にいるとき（§31）。
+    // 遠いときは phone_return（GO BACK AND ANSWER IT）が担当する
+    maxDistance: 8,
+    noCoreReach: true,
     requiredState: 'phone|ringing',
     cooldown: 30,
     weight: 2.0,
@@ -800,6 +826,31 @@ export const OBJECT_SITUATION_POOLS: Record<string, string[]> = {
   fridge: ['sit_dont_move', 'sit_turn', 'sit_lights_off'],
 };
 
+/**
+ * Viewer の関心が一点に向く瞬間（§52-54）。
+ *
+ * 普段はコメント欄が状況に口を出しているが、
+ * 電話が鳴る・汚い風呂を見つける・仏壇を調べる・幽霊を見つける、
+ * という瞬間だけ全員の関心がそこへ向く。
+ */
+export interface CoreOpportunity {
+  source: 'altar' | 'bath' | 'phone' | 'ghost';
+  startedAt: number;
+  expiresAt: number;
+  /** 0..1。時間が経つほど弱くなる */
+  strength: number;
+  /** この機会で出したいリクエスト */
+  preferred: string[];
+}
+
+/** どの Request が Core か（§6） */
+export const CORE_REQUESTS = new Set([
+  'altar_beat', 'altar_again',
+  'bath_sip', 'bath_sip2', 'bath_finish',
+  'phone_answer', 'phone_return', 'phone_listen', 'phone_last',
+  'ghost_closer', 'ghost_selfie', 'ghost_selfie_close', 'ghost_frame', 'ghost_refind',
+]);
+
 /* ------------------------------------------------------------------ *
  * Context / Director
  * ------------------------------------------------------------------ */
@@ -844,6 +895,10 @@ export interface Floor1Context {
   situationRequestNeed: number;
   /** 今どんな「お膳立て」が成立しているか。値は 0..1 の強さ */
   setups: Record<SituationSetup, number>;
+  /** 今 Viewer の関心が向いている対象。無ければ空 */
+  coreOpportunities: CoreOpportunity[];
+  /** 明確な機会を何度逃したか。逃すほど次を押す（§59-62） */
+  coreMisses: number;
   /** 直前に触った / 達成したオブジェクト。状況Requestはこれに紐づく */
   lastObject: string | null;
   /** その出来事からの経過秒 */
@@ -874,6 +929,8 @@ export class Floor1Director {
   /** デバッグ表示用 */
   lastCandidates: Candidate[] = [];
   lastRejections: Rejection[] = [];
+  /** 直前の Core 優先判定。ログとデバッグ用 */
+  lastCoreSelection: { bestCore: string; bestOther: string; dominance: number; prob: number } | null = null;
 
   reset() {
     this.lastOffered.clear();
@@ -961,7 +1018,12 @@ export class Floor1Director {
       if (isGhost && !ctx.discovered.has('ghost')) return 'not_discovered';
       const d = isGhost ? ctx.ghostDistance : ctx.distances[def.object];
       if (d === undefined) return 'no_distance';
-      if (def.maxDistance !== undefined && d > def.maxDistance * slack) return 'too_far';
+      // Core Opportunity の最中は、少し離れても関心は続いている（§19, §25）。
+      // 仏壇を調べて一歩下がっただけで PLAY A BEAT が消えるのは不自然。
+      const core = ctx.coreOpportunities.find((c) => c.preferred.includes(def.id));
+      const reach = core && !def.noCoreReach ? CONFIG.floor1.coreOpportunity.reachMult : 1;
+      if (def.maxDistance !== undefined && d > def.maxDistance * slack * reach) return 'too_far';
+      if (def.minDistance !== undefined && d < def.minDistance) return 'too_close';
     }
     if (def.room && ctx.room !== def.room) return 'wrong_room';
 
@@ -1145,35 +1207,29 @@ export class Floor1Director {
    */
   private coreOpportunity(def: Floor1RequestDef, ctx: Floor1Context, reasons: string[]) {
     const cfg = CONFIG.floor1.coreOpportunity;
-    let s = 0;
-    // 電話が鳴っている。これに反応しないViewerは不自然
-    if (def.object === 'phone' && ctx.states.phone === 'ringing' && def.id === 'phone_answer') {
-      s += cfg.phoneRinging;
-      reasons.push(`phoneRinging+${cfg.phoneRinging}`);
-      if ((ctx.distances.phone ?? 99) < 8) {
+    const op = ctx.coreOpportunities.find((c) => c.preferred.includes(def.id));
+    if (!op) return 0;
+
+    let s = cfg.base[op.source] * op.strength;
+    reasons.push(`core:${op.source}+${s.toFixed(0)}`);
+
+    // 近い / 見ている なら、もっと自然
+    if (def.object) {
+      const d = def.object === 'ghost' ? ctx.ghostDistance : ctx.distances[def.object] ?? 99;
+      if (d < 8) {
         s += cfg.near;
         reasons.push(`near+${cfg.near}`);
       }
-    }
-    // 仏壇を調べて、まだ鳴らしていない
-    if (def.id === 'altar_beat' && ctx.discovered.has('altar') && !ctx.completed.has('altar_beat')) {
-      s += cfg.altarFresh;
-      reasons.push(`altarFresh+${cfg.altarFresh}`);
-      const att = ctx.attention.altar ?? 0;
-      if (att > 1.5) {
+      if (ctx.focusObject === def.object) {
         s += cfg.lookingAt;
         reasons.push(`lookingAt+${cfg.lookingAt}`);
       }
     }
-    // 風呂を見つけた直後
-    if (def.id === 'bath_sip' && ctx.discovered.has('bath') && !ctx.completed.has('bath_sip')) {
-      s += cfg.freshObject;
-      reasons.push(`bathFresh+${cfg.freshObject}`);
-    }
-    // 幽霊を見つけた直後
-    if (def.id === 'ghost_closer' && ctx.discovered.has('ghost') && !ctx.completed.has('ghost_closer')) {
-      s += cfg.freshObject;
-      reasons.push(`ghostFresh+${cfg.freshObject}`);
+    // 明確な機会を何度も逃していたら押す（§59-62）
+    if (ctx.coreMisses > 0) {
+      const b = Math.min(cfg.missCap, ctx.coreMisses * cfg.missStep);
+      s += b;
+      reasons.push(`coreMiss+${b}`);
     }
     return s;
   }
@@ -1196,9 +1252,8 @@ export class Floor1Director {
           c.score += nb;
           c.reasons.push(`need+${nb.toFixed(0)}`);
         }
-        const core = this.coreOpportunity(d, ctx, c.reasons);
-        c.score += core;
-        c.core = core > 0;
+        c.score += this.coreOpportunity(d, ctx, c.reasons);
+        c.core = CORE_REQUESTS.has(d.id);
         return c;
       })
       .sort((a, b) => b.score - a.score);
@@ -1220,11 +1275,30 @@ export class Floor1Director {
       return list[0].def;
     };
 
-    // 電話が鳴っている・仏壇を今調べた、のような明確な機会では
-    // Object Request が高確率で勝ってよい（§46）。ただし固定はしない（§47）。
+    // --- Core Priority Selection（§8-13）---
+    // bath_sip 84 に対して STAY HERE 26 が普通に勝つのは、数学的には正しいが
+    // ゲームとして不自然。差が開いているほど Core を選ぶ確率を上げる。
     const core = top.filter((c) => c.core);
-    if (core.length && Math.random() < CONFIG.floor1.coreOpportunity.winRate) {
-      return pickFrom(core);
+    const other = top.filter((c) => !c.core);
+    if (core.length) {
+      const bestCore = core[0].score;
+      const bestOther = other.length ? other[0].score : 0;
+      const dominance = bestCore / Math.max(bestOther, 1);
+      const cfg = CONFIG.floor1.coreOpportunity;
+      const prob =
+        dominance >= cfg.dominance[2] ? cfg.prob[2]
+        : dominance >= cfg.dominance[1] ? cfg.prob[1]
+        : dominance >= cfg.dominance[0] ? cfg.prob[0]
+        : 0;
+      this.lastCoreSelection = {
+        bestCore: `${core[0].def.id}:${bestCore.toFixed(0)}`,
+        bestOther: other.length ? `${other[0].def.id}:${bestOther.toFixed(0)}` : '-',
+        dominance: Math.round(dominance * 100) / 100,
+        prob,
+      };
+      if (prob > 0 && Math.random() < prob) return pickFrom(core);
+    } else {
+      this.lastCoreSelection = null;
     }
     return pickFrom(top);
   }

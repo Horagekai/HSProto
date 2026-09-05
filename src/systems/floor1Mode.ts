@@ -11,6 +11,7 @@ import { FLOOR1_POOL,
   type Floor1RequestDef,
   type GhostState,
   type SituationSetup,
+  type CoreOpportunity,
 } from './floor1';
 import { FLOOR1_OBJECTS, roomAt, type Floor1Room } from '../world/floor1Level';
 import { HorrorDirector, type GhostAction, type HorrorEventDef, type RunPhase } from './horrorDirector';
@@ -252,6 +253,13 @@ export class Floor1Mode {
   /** 直前に達成したリクエスト。連鎖の判定に使う */
   private lastCompleted: string | null = null;
   private interrupted = new Set<string>();
+  /** 今 Viewer の関心が向いている対象 */
+  private cores: CoreOpportunity[] = [];
+  /** 明確な機会を逃した回数 */
+  coreMisses = 0;
+  /** Core が Filler を蹴った直後、短時間 Core を優先する（§41-43） */
+  private coreReservation: { source: string; until: number } | null = null;
+  opportunityCounts = { altar: 0, bath: 0, phone: 0, ghost: 0 };
   /** Offer 直前の再評価で捨てた候補の数 */
   cancelled = 0;
   /**
@@ -365,6 +373,10 @@ export class Floor1Mode {
     this.lastObjectRequestAt = 0;
     this.lastCompleted = null;
     this.interrupted.clear();
+    this.cores = [];
+    this.coreMisses = 0;
+    this.coreReservation = null;
+    this.opportunityCounts = { altar: 0, bath: 0, phone: 0, ghost: 0 };
     this.cancelled = 0;
     this.funnel = {
       checked: 0,
@@ -512,7 +524,10 @@ export class Floor1Mode {
 
   private discover(id: string, label: string, likes: number) {
     if (id === 'bath') this.opportunities.bathDiscovered += 1;
-    if (id === 'ghost') this.opportunities.ghostDiscovered += 1;
+    if (id === 'ghost') {
+      this.opportunities.ghostDiscovered += 1;
+      this.openCore('ghost', ['ghost_closer', 'ghost_selfie', 'ghost_frame']);
+    }
     // 発見トーストと視聴者の反応を見せる間を作る（§69-70）
     this.quiet = Math.max(this.quiet, CONFIG.floor1.pacing.afterDiscovery);
     const st = this.objects.get(id);
@@ -595,11 +610,12 @@ export class Floor1Mode {
       `object=${id} state=${st.state} count=${st.interactions} first=${first}`,
     );
 
+    // 調べた瞬間に Viewer の関心がそこへ向く（§9, §19, §24）
     if (id === 'altar') {
       this.opportunities.altarInspected += 1;
-      if (!this.completedIds.has('altar_beat')) this.interruptForOpportunity('altar_inspected');
+      if (!this.completedIds.has('altar_beat')) this.openCore('altar', ['altar_beat', 'altar_again']);
     }
-    if (id === 'bath' && !this.completedIds.has('bath_sip')) this.interruptForOpportunity('bath_inspected');
+    if (id === 'bath' && this.bathSips === 0) this.openCore('bath', ['bath_sip', 'bath_sip2']);
     this.d.toast(INSPECT_TEXT[id]?.[st.state] ?? INSPECT_TEXT[id]?.default ?? 'NOTHING HERE', 1.6);
     // 視聴者が煽る。ただしこれは Request ではない（§47）
     if (first) {
@@ -1252,6 +1268,8 @@ export class Floor1Mode {
       situationRequestNeed: this.situationRequestNeed(),
       setups: this.currentSetups(),
       lastCompleted: this.lastCompleted,
+      coreOpportunities: this.cores,
+      coreMisses: this.coreMisses,
       lastObject: this.lastObject,
       sinceObject: this.sinceObject,
     };
@@ -1365,6 +1383,20 @@ export class Floor1Mode {
           `room=${this.room()} score=${c.score.toFixed(1)} ${c.reasons.join(',')}`,
       );
     }
+    if (this.director.lastCoreSelection) {
+      const cs = this.director.lastCoreSelection;
+      this.d.log(
+        'core_selection_evaluated',
+        `bestCore=${cs.bestCore} bestOther=${cs.bestOther} dominance=${cs.dominance} coreProbability=${cs.prob}`,
+      );
+    }
+    // 電話が鳴っているのに Phone Request が落ちた理由は必ず残す（§44, §67-68）
+    for (const id of ['altar_beat', 'phone_answer', 'phone_return', 'bath_sip']) {
+      const r = this.director.lastRejections.find((x) => x.id === id);
+      if (r && this.cores.length) {
+        this.d.log('core_request_rejected', `id=${id} reason=${r.reason} room=${this.room()}`);
+      }
+    }
     this.d.log(
       'request_eligibility_checked',
       `checked=${FLOOR1_POOL.length} eligible=${FLOOR1_POOL.length - this.director.lastRejections.length} ` +
@@ -1448,7 +1480,56 @@ export class Floor1Mode {
   }
 
   /**
-   * 世界で今まさに何かが起きた。待機中の候補を捨てて考え直す（§71）。
+   * Viewer の関心が一点に向く瞬間を作る（§52-54）。
+   *
+   * 対象の前に立っている間だけ有効、ではなく **窓** として持つ。
+   * 仏壇を調べて一歩下がっただけで PLAY A BEAT が消えるのが、
+   * 人間プレイで一度も出なかった原因だった。
+   */
+  private openCore(source: 'altar' | 'bath' | 'phone' | 'ghost', preferred: string[]) {
+    const cfg = CONFIG.floor1.coreOpportunity;
+    const existing = this.cores.find((c) => c.source === source);
+    if (existing && existing.expiresAt > this.elapsed) return;
+    const life = cfg.life[source] ?? 14;
+    this.cores.push({
+      source,
+      startedAt: this.elapsed,
+      expiresAt: this.elapsed + life,
+      strength: 1,
+      preferred,
+    });
+    this.opportunityCounts[source] += 1;
+    this.d.log(
+      'core_opportunity_started',
+      `source=${source} preferred=${preferred.join('|')} life=${life}`,
+    );
+    // 待機中の Filler を捨てて考え直す（§39-42）
+    this.interruptForOpportunity(`core_${source}`);
+    this.coreReservation = { source, until: this.elapsed + CONFIG.floor1.coreOpportunity.life[source] };
+  }
+
+  /** 機会の寿命管理。切れたら「逃した」として数える（§59-62） */
+  private updateCores() {
+    for (const c of this.cores) {
+      const span = c.expiresAt - c.startedAt;
+      c.strength = Math.max(0, 1 - (this.elapsed - c.startedAt) / span);
+    }
+    const expired = this.cores.filter((c) => c.expiresAt <= this.elapsed);
+    for (const c of expired) {
+      const resolved = c.preferred.some((id) => this.offeredHistory.includes(id));
+      if (!resolved) {
+        this.coreMisses += 1;
+        this.d.log('core_opportunity_expired', `source=${c.source} resolved=false misses=${this.coreMisses}`);
+      } else {
+        this.d.log('core_opportunity_resolved', `source=${c.source}`);
+      }
+    }
+    this.cores = this.cores.filter((c) => c.expiresAt > this.elapsed);
+    if (this.coreReservation && this.coreReservation.until <= this.elapsed) this.coreReservation = null;
+  }
+
+  /**
+   * 世界で今まさに何かが起きた。待機中の候補を捨てて考え直す（§39-42）。
    * 電話が鳴っているのに、その前から並んでいた「動くな」が先に出るのは不自然。
    */
   private interruptForOpportunity(what: string) {
@@ -1469,7 +1550,10 @@ export class Floor1Mode {
   markPhoneEvent() {
     this.phoneEventAt = this.elapsed;
     this.opportunities.phoneRinging += 1;
-    if (this.objects.get('phone')?.state === 'ringing') this.interruptForOpportunity('phone_ringing');
+    if (this.objects.get('phone')?.state === 'ringing') {
+      // 近ければ「取れ」、遠ければ「戻って取れ」（§30-33）
+      this.openCore('phone', ['phone_answer', 'phone_return', 'phone_listen']);
+    }
     this.d.log('situation_setup_created', `setup=afterPhone at=${this.elapsed.toFixed(1)}`);
   }
 
@@ -1661,6 +1745,9 @@ export class Floor1Mode {
           done = this.objects.get('portraits')!.state === 'restored';
           break;
         case 'phone_answer':
+        case 'phone_return':
+          // 近づくだけでは終わらない。受話器を取って初めて完了（§36）
+          a.progress = clamp01((26 - this.objDistance('phone')) / 24);
           done = this.objects.get('phone')!.state === 'answered';
           break;
         case 'bath_sip':
@@ -1792,6 +1879,16 @@ export class Floor1Mode {
       }
     }
 
+    // 鳴り止んだら電話のリクエストも終わる（§37）
+    if (
+      (def.id === 'phone_answer' || def.id === 'phone_return') &&
+      this.objects.get('phone')?.state !== 'ringing' &&
+      this.objects.get('phone')?.state !== 'answered'
+    ) {
+      this.d.toast('IT STOPPED RINGING', 1.4);
+      this.endRequest('ignored');
+      return;
+    }
     if (a.timeLeft <= 0) {
       if (a.def.type === 'hold' && a.tier > 0) this.finish(a, a.earned);
       else this.endRequest('ignored');
@@ -1842,6 +1939,7 @@ export class Floor1Mode {
       this.lastRoom = room;
       this.roomChangedAt = this.elapsed;
     }
+    this.updateCores();
     this.updateActionUnlock();
     this.updateHold(dt, input.holdingE);
     this.evaluate(dt, input);
@@ -2324,6 +2422,8 @@ export class Floor1Mode {
         maxCandidates: this.funnel.candidateCounts.length ? Math.max(...this.funnel.candidateCounts) : 0,
       },
       opportunities: { ...this.opportunities },
+      coreOpportunities: { ...this.opportunityCounts },
+      coreMisses: this.coreMisses,
       offerTimes: [...this.offerTimes],
       objectRequestsOffered: this.objectRequestsOffered,
       situationRequestsOffered: this.situationRequestsOffered,

@@ -795,13 +795,27 @@ export const CONFIG = {
      * 文脈が成立した時だけ乗る。baseWeight を上げるのとは別物。
      */
     coreOpportunity: {
-      phoneRinging: 38,
-      altarFresh: 22,
-      freshObject: 18,
-      lookingAt: 8,
-      /** 明確な機会があるとき、Object Request を選ぶ確率。1.0 にはしない（§47） */
-      winRate: 0.72,
+      /** 機会が続く秒数（§19, §25, §43） */
+      life: { altar: 16, bath: 16, phone: 12, ghost: 14 } as Record<string, number>,
+      /** 機会の最中は距離条件をこの倍率まで緩める */
+      reachMult: 2.2,
+      /** 対象ごとの基礎点 */
+      /**
+       * 対象ごとの基礎点。電話だけ高いのは、鳴っている間しか成立しない
+       * 時間制限つきの出来事だから。幽霊はいつでも撮れる。
+       */
+      base: { altar: 26, bath: 26, phone: 46, ghost: 20 } as Record<string, number>,
       near: 10,
+      lookingAt: 8,
+      /** 明確な機会を逃すほど次を押す。Hard Guarantee にはしない（§61） */
+      missStep: 6,
+      missCap: 18,
+      /**
+       * Core が Filler より何倍強ければ、どれくらいの確率で Core を選ぶか（§13）。
+       * 100% にはしない。電話が鳴っていても「動くな」と言われる Run は残す。
+       */
+      dominance: [1.2, 1.5, 2.0],
+      prob: [0.5, 0.65, 0.78],
     },
     /** 状況Requestの「お膳立て」判定（§10-13） */
     setup: {
