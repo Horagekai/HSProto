@@ -206,8 +206,12 @@ export function testKeepFrame(seeds = 15, game?: Game): SeedResult {
     d.player.yaw += Math.PI;
     for (let i = 0; i < 30 * 60; i++) {
       hold(d, 1);
+      // 幽霊が動き出したら前提が崩れる。「背後の幽霊」ではなくなる
+      if (f1.ghost !== 'seated') break;
       const rr = f1.requestRuntime();
       if (rr.active && rr.id === 'ghost_frame') {
+        // targetLocked は提示の次フレームの評価で更新される
+        hold(d, 2);
         const v = f1.view();
         if (!v?.targetLocked) badOffers += 1;
         break;

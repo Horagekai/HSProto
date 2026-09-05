@@ -754,6 +754,8 @@ export const CONFIG = {
 
     /** [E] で触れる距離 */
     interactRange: 3.0,
+    /** KEEP IN FRAME を出すのに必要な画面中央度。端の映り込みでは出さない */
+    frameRequestCenter: 0.2,
     /** 仏間へ気づかせるコメントを出す確率。毎回は出さない */
     guidanceChance: 0.55,
     /** 電話が鳴っている時間 */
@@ -890,6 +892,11 @@ export const CONFIG = {
     pacing: {
       /** 候補が出てから実際に提示するまでの最短・最長 */
       offerDelay: { min: 2, max: 5.5 },
+      /**
+       * 今まさに見ている対象への Request は間を詰める。
+       * プレイヤーが仏壇の前にいるのは7〜8秒しかない。
+       */
+      coreOfferDelay: { min: 1.2, max: 2.8 },
       /**
        * 候補の寿命。
        * v1.3 までは出来事のたびに待ち時間を引き直していたので、

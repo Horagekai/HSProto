@@ -242,9 +242,11 @@ export async function runRequestTests(game?: Game): Promise<RequestTestResult[]>
       }
     }
     objectOffers = f1.objectRequestsOffered;
+    // need は「Object Request が足りていない度合い」なので、
+    // 実際に出るようになった今は 0 のままが正常。見るべきは提示数の方。
     add(
       '8 調べたあとObject Requestが出る',
-      need > 0 && objectOffers > 0,
+      objectOffers > 0,
       `need=${need.toFixed(2)} objectOffers=${objectOffers} situation=${f1.situationRequestsOffered}`,
     );
   }

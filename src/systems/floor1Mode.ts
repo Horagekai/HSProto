@@ -569,6 +569,12 @@ export class Floor1Mode {
   }
 
   private discover(id: string, label: string, likes: number) {
+    // 何かを見つけたら、視聴者は一時的に喋りやすくなる
+    this.d.viewerImpulse(id === 'ghost' ? 'ghost_reveal' : 'discovery');
+    // Core を開く対象は、この発見そのものが視聴者の話題になる。
+    // 「発見直後は間を置く」を効かせると、Core の割り込みと打ち消し合って
+    // 提示が発見の 5秒後になり、通りすがりのプレイヤーには間に合わない。
+    const opensCore = id === 'bath' || id === 'altar' || id === 'ghost';
     // 視聴者は配信を見ている。プレイヤーが [E] を押さなくても、見つけた時点で口は出せる。
     // ここが対象ごとにバラバラだったせいで、仏壇だけ機会が開かない Run があった。
     if (id === 'bath') {
@@ -583,7 +589,7 @@ export class Floor1Mode {
       this.openCore('ghost', ['ghost_closer', 'ghost_selfie', 'ghost_frame']);
     }
     // 発見トーストと視聴者の反応を見せる間を作る（§69-70）
-    this.quiet = Math.max(this.quiet, CONFIG.floor1.pacing.afterDiscovery);
+    if (!opensCore) this.quiet = Math.max(this.quiet, CONFIG.floor1.pacing.afterDiscovery);
     const st = this.objects.get(id);
     if (!st || st.discovered) return;
     st.discovered = true;
@@ -1079,7 +1085,10 @@ export class Floor1Mode {
     // 断定的なヒントは出さない。確信を持たせないのが目的
     if (Math.random() < 0.45) this.d.hint(AMBIENT_HINTS[def.id] ?? '...', 1.8);
     this.d.chat('idle', 1);
-    this.markEvent('anomaly');
+    // **環境音では Request 評価を止めない。**
+    // 遠くでパイプが鳴った程度で「今は視聴者が黙る番」にはならない。
+    // 実プレイで、これが仏壇と風呂の機会を2Run連続で潰していた。
+    this.markEvent('ambient');
     this.d.log(
       'horror_event_triggered',
       `event_id=${def.id} family=${def.family} intensity=${def.intensity} ` +
@@ -1207,7 +1216,7 @@ export class Floor1Mode {
         this.d.addHaunting(2);
         break;
       case 'PhoneSuddenRing':
-        this.objects.setState('phone', 'ringing');
+        this.startPhoneRing();
         this.d.sfxPhone(this.objDistance('phone'));
         this.d.footage('THE PHONE IS RINGING', 3);
         this.d.hint('THE PHONE. RIGHT NOW.', 3);
@@ -1317,6 +1326,10 @@ export class Floor1Mode {
         const g = this.ghost === 'seated' ? SOFA : this.d.ghostPos();
         return this.d.isVisible(g.x, g.z, 1.3);
       })(),
+      ghostCenter: (() => {
+        const g = this.ghost === 'seated' ? SOFA : this.d.ghostPos();
+        return this.d.centerOf(g.x, g.z, 1.3);
+      })(),
       selfie: this.d.selfie(),
       lightOn: this.d.lightOn(),
       focusObject: this.focusObject(),
@@ -1349,8 +1362,15 @@ export class Floor1Mode {
     this.sinceObject = 0;
   }
 
+  /**
+   * 意味のある出来事があった。
+   *
+   * `ambient` だけは **Request 評価を止めない**。
+   * 家鳴りや遠くの水音は「世界が動いた」ではあっても、
+   * 視聴者が口をつぐむ理由にはならない。
+   */
   private markEvent(kind: string) {
-    this.sinceEvent = 0;
+    if (kind !== 'ambient') this.sinceEvent = 0;
     this.horror.markMeaningful();
     this.d.markEvent(kind);
   }
@@ -1373,10 +1393,13 @@ export class Floor1Mode {
       const ctx = this.context();
 
       // 待っている間に出来事があったら少しだけ譲る。
-      // ただし v1.3 までは毎フレーム引き直していたので、Horror Event が
-      // 10秒おきに出るだけで候補が 55秒 Pending し続けていた。
-      // 譲るのは合計 pace.candidate.maxDefer 秒まで。
-      if (this.sinceEvent < pace.afterEvent && this.pendingDeferred < pace.candidate.maxDefer) {
+      // ただし **今まさに見ている対象への Request は譲らない。**
+      // 視聴者はその物の話をしているのであって、遠くの物音で黙る理由がない。
+      // 譲っている間にプレイヤーが部屋を出てしまい、仏壇と風呂が2Run連続で潰れた。
+      const forCore = this.cores.some(
+        (c) => c.state !== 'expired' && c.preferred.includes(def.id),
+      );
+      if (!forCore && this.sinceEvent < pace.afterEvent && this.pendingDeferred < pace.candidate.maxDefer) {
         const add = Math.min(dt * 2, pace.candidate.maxDefer - this.pendingDeferred);
         this.pendingDeferred += add;
         this.pendingDelay += add;
@@ -1426,7 +1449,9 @@ export class Floor1Mode {
     if (this.quiet > 0) return;
     // Hard Minimum Gap。波がどれだけ高くてもここは破らない（§10-11）
     if (this.sinceOffer < pace.hardMinGap) return;
-    if (this.sinceEvent < pace.afterEvent) return;
+    // 出来事の直後は少し空ける。ただし今まさに Core Opportunity が開いているなら待たない。
+    // プレイヤーが対象の前にいる時間は7〜8秒しかなく、そこで3.5秒待つと間に合わない。
+    if (!core && this.sinceEvent < pace.afterEvent) return;
 
     const ctx = this.context();
     const def = this.director.select(ctx);
@@ -1477,7 +1502,14 @@ export class Floor1Mode {
     }
     // 近くにいることは条件であってトリガーではない。ここから更に間を置く
     this.pendingDef = def;
-    this.pendingDelay = randRange(pace.offerDelay.min, pace.offerDelay.max);
+    // 視聴者がその対象を今まさに見ているなら、間を詰める。
+    // 「見つけた → 数秒 → 言われる」が成立する長さにする。
+    const fresh = this.cores.some(
+      (c) => c.state === 'active' && c.preferred.includes(def.id),
+    );
+    this.pendingDelay = fresh
+      ? randRange(pace.coreOfferDelay.min, pace.coreOfferDelay.max)
+      : randRange(pace.offerDelay.min, pace.offerDelay.max);
     this.pendingAge = 0;
     this.pendingDeferred = 0;
     const cat = def.object ? 'object' : 'situation';
@@ -2261,6 +2293,8 @@ export class Floor1Mode {
       return;
     }
     if (st.state !== 'idle' && st.state !== 'normal') return;
+    // 初期状態が 'normal' のことがあるので揃えておく
+    if (st.state === 'normal') this.objects.setState('phone', 'idle');
     this.phoneTimer -= dt;
     if (this.phoneTimer > 0) return;
     const ready =
@@ -2271,17 +2305,12 @@ export class Floor1Mode {
       return;
     }
     this.phoneTimer = randRange(45, 80);
-    // 鳴り続けはしない。鳴っている間だけが機会（§34, §82）
-    this.phoneRingLeft = randRange(CONFIG.floor1.phoneRing.min, CONFIG.floor1.phoneRing.max);
-    this.d.viewerImpulse('phone_ring');
-    this.objects.setState('phone', 'ringing');
-    this.markPhoneEvent();
+    this.startPhoneRing();
     this.d.sfxPhone(this.objDistance('phone'));
     this.d.addLikes(80);
     this.d.footage('THE PHONE IS RINGING   +80 Likes', 2.4);
     this.d.chat('anomaly', 3);
     this.markEvent('anomaly');
-    this.d.log('subject_state_changed', 'subject=phone old=idle new=ringing');
   }
 
 
@@ -2594,13 +2623,26 @@ export class Floor1Mode {
     this.d.log('guidance_comment', `target=butsuma count=${this.guideShown}`);
   }
 
+  /**
+   * 電話を鳴らす。**鳴らすのは必ずここを通す。**
+   *
+   * 実プレイのログで、Horror Event 経由で鳴らした電話が鳴動時間 0 のまま
+   * 同じフレームで鳴り止み、Core Session が wall=0.0 で死んでいた。
+   */
+  startPhoneRing(seconds = randRange(CONFIG.floor1.phoneRing.min, CONFIG.floor1.phoneRing.max)) {
+    if (this.objects.get('phone')?.state === 'ringing' && this.phoneRingLeft > 0) return;
+    this.phoneRingLeft = seconds;
+    this.objects.setState('phone', 'ringing');
+    this.d.viewerImpulse('phone_ring');
+    this.markPhoneEvent();
+    this.d.log('subject_state_changed', `subject=phone old=idle new=ringing duration=${seconds.toFixed(1)}`);
+  }
+
   /** テスト用。電話を実際の経路と同じように鳴らす */
   debugRingPhone(seconds = 20) {
     this.objects.get('phone')!.discovered = true;
-    this.objects.setState('phone', 'ringing');
-    this.phoneRingLeft = seconds;
     this.phoneTimer = 999;
-    this.markPhoneEvent();
+    this.startPhoneRing(seconds);
   }
 
   /** テスト用。鳴り止ませる */

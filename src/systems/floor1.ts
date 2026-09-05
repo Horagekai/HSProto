@@ -481,7 +481,10 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     targetName: 'THE FIGURE ON THE SOFA',
     // 提示時点で「今まさに映っている」ことを要求する（§37-38）。
     // 20m 先の見えない相手に KEEP IT IN FRAME を出さない。
+    // 「フレームに収め続けろ」は距離を緩めない。
+    // Core の緩和（2.2倍）が効くと 30m 先でも提示でき、直後に TOO FAR になる。
     maxDistance: 14,
+    noCoreReach: true,
     requiresVisible: true,
     requiredGhost: ['seated', 'aware', 'standing'],
     cooldown: 55,
@@ -910,6 +913,8 @@ export interface Floor1Context {
   ghost: GhostState;
   ghostDistance: number;
   ghostOnScreen: boolean;
+  /** 幽霊が画面中央にどれだけ寄っているか 0..1。端に映り込んだだけを弾く */
+  ghostCenter: number;
   selfie: boolean;
   lightOn: boolean;
   /** 今カメラを向けている対象。KEEP LOOKING 系の成立判定に使う */
@@ -1085,8 +1090,12 @@ export class Floor1Director {
     if (def.minHaunted !== undefined && ctx.haunted < def.minHaunted) return 'haunted_low';
     if (def.maxHaunted !== undefined && ctx.haunted > def.maxHaunted) return 'haunted_high';
     if (def.requiredGhost && !def.requiredGhost.includes(ctx.ghost)) return 'ghost_state';
-    // 「今まさに映っているもの」に対してだけ出す Request（§37-38）
-    if (def.requiresVisible && !ctx.ghostOnScreen) return 'target_not_visible';
+    // 「今まさに映っているもの」に対してだけ出す Request（§37-38）。
+    // 画面の端にかすっているだけで出すと、提示した次の瞬間に TARGET LOST になる。
+    // 進捗判定と同じ厳しさに揃える。
+    if (def.requiresVisible && ctx.ghostCenter < CONFIG.floor1.frameRequestCenter) {
+      return 'target_not_centered';
+    }
     if (def.lastTemptation && !ctx.returning) return 'not_returning';
 
     // --- 状況Requestの Eligibility（§16, §69）---
