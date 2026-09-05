@@ -20,6 +20,25 @@ import { FLOOR1_OBJECTS } from '../world/floor1Level';
  */
 export type Floor1RequestType = 'action' | 'hold' | 'constraint' | 'target_constraint';
 
+/**
+ * 状況Requestの「お膳立て」（§26-28）。
+ *
+ * v2 まで状況Requestは「直前にオブジェクトへ触っていること」が必須で、
+ * 移動中や幽霊を見失った直後には構造的に出せなかった。設計意図と逆だった。
+ */
+export type SituationSetup =
+  | 'object'
+  | 'behind'
+  | 'ghostLost'
+  | 'afterPhone'
+  | 'afterHorror'
+  | 'roomTransition'
+  | 'hallway'
+  | 'returning'
+  | 'lingering'
+  | 'moving'
+  | 'quietSuspense';
+
 export interface HoldTier {
   /** 何秒押し続けたら */
   at: number;
@@ -76,7 +95,27 @@ export interface Floor1RequestDef {
    *   returning   帰路
    *   afterEvent  Horror Event の直後の静けさ
    */
-  setups?: Array<'object' | 'moving' | 'lingering' | 'behind' | 'ghostLost' | 'returning' | 'afterEvent'>;
+  /**
+   * 状況Requestが「その部屋にいるだけで」候補になれる部屋（§5-6）。
+   * Eligibility は「今これを言ったら完全に意味不明か」だけを見る。
+   * 自然さの強弱は Score が決める。
+   */
+  allowedRooms?: Floor1Room[];
+  /** この対象が近い / 最近触ったなら候補になれる（§8-14） */
+  relatedObjects?: string[];
+  maxRelatedObjectDistance?: number;
+  recentObjectWindow?: number;
+  /**
+   * お膳立て。**Eligibility の条件ではなく Score のボーナス**（§3, §23）。
+   * これが無くても部屋や距離で候補には入る。順位が下がるだけ。
+   */
+  preferredSetups?: SituationSetup[];
+  /**
+   * 連鎖の役割（§33-35）。
+   * followup は「同じ流れの続き」なので、状況Requestの連発ペナルティを免除する。
+   * DON'T TURN AROUND → NOW TURN AROUND が fatigue で消えていた。
+   */
+  chainRole?: 'opener' | 'followup' | 'finisher';
   cooldown: number;
   oncePerRun?: boolean;
   weight: number;
@@ -502,6 +541,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
   // ---------------- SITUATION ----------------
   {
     id: 'sit_dont_turn',
+    relatedObjects: ['ghost', 'phone', 'mirror', 'portraits'],
     label: "DON'T TURN AROUND",
     desc: 'KEEP FACING FORWARD',
     type: 'constraint',
@@ -515,26 +555,28 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     danger: 6,
     haunting: 8,
     afterObject: ['ghost', 'phone', 'mirror', 'fridge', 'portraits'],
-    setups: ['object', 'behind', 'ghostLost'],
+    // 背後の音・幽霊を見失った・電話のあとが本命。オブジェクトは要らない
+    preferredSetups: ['behind', 'ghostLost', 'afterPhone', 'afterHorror', 'object'],
   },
   {
     id: 'sit_turn',
+    relatedObjects: ['ghost', 'phone', 'mirror', 'portraits'],
     label: 'TURN AROUND',
     desc: 'LOOK BEHIND YOU',
     type: 'action',
-    reward: 10000,
+    reward: 6000,
     riskTier: 4,
-    afterRequest: 'sit_dont_turn',
     cooldown: 120,
     weight: 1.1,
     time: 10,
     danger: 4,
     haunting: 6,
     afterObject: ['ghost', 'phone', 'mirror'],
-    setups: ['object', 'behind', 'ghostLost', 'afterEvent'],
+    preferredSetups: ['behind', 'ghostLost', 'afterPhone', 'afterHorror', 'object'],
   },
   {
     id: 'sit_dont_move',
+    relatedObjects: ['altar', 'bath', 'phone', 'portraits', 'fridge'],
     label: "DON'T MOVE",
     desc: 'STAND STILL',
     type: 'constraint',
@@ -548,10 +590,11 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     danger: 4,
     haunting: 6,
     afterObject: ['altar', 'bath', 'phone', 'portraits'],
-    setups: ['object', 'lingering', 'afterEvent'],
+    preferredSetups: ['quietSuspense', 'lingering', 'afterHorror', 'behind', 'object'],
   },
   {
     id: 'sit_lights_off',
+    relatedObjects: ['mirror', 'altar', 'fridge', 'bath'],
     label: 'LIGHTS OFF',
     desc: '[F] KILL THE LIGHT AND WAIT',
     type: 'constraint',
@@ -565,10 +608,11 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     danger: 5,
     haunting: 9,
     afterObject: ['mirror', 'altar', 'fridge'],
-    setups: ['object', 'lingering', 'afterEvent', 'returning'],
+    preferredSetups: ['quietSuspense', 'lingering', 'afterHorror', 'returning', 'object'],
   },
   {
     id: 'sit_turn_last',
+    relatedObjects: ['ghost', 'phone', 'mirror'],
     label: 'TURN AROUND',
     desc: 'ONE LAST LOOK BEHIND YOU',
     type: 'action',
@@ -583,11 +627,12 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     haunting: 8,
     lastTemptation: true,
     afterObject: ['ghost', 'phone', 'mirror'],
-    setups: ['object', 'returning', 'behind'],
+    preferredSetups: ['returning', 'behind', 'object'],
   },
   {
     // 背後で何かが鳴った直後だけ。Random には出さない（§13）
     id: 'sit_look_behind',
+    relatedObjects: ['ghost', 'phone', 'mirror'],
     label: 'LOOK BEHIND YOU',
     desc: 'JUST LOOK',
     type: 'action',
@@ -598,10 +643,11 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     time: 9,
     danger: 3,
     haunting: 5,
-    setups: ['behind', 'ghostLost'],
+    preferredSetups: ['behind', 'ghostLost'],
   },
   {
     id: 'sit_stay_here',
+    relatedObjects: ['ghost', 'altar', 'bath'],
     label: 'STAY HERE',
     desc: 'DO NOT LEAVE THIS ROOM',
     type: 'constraint',
@@ -613,7 +659,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     time: 20,
     danger: 3,
     haunting: 5,
-    setups: ['moving', 'afterEvent', 'ghostLost'],
+    preferredSetups: ['roomTransition', 'hallway', 'afterHorror', 'ghostLost', 'quietSuspense', 'lingering'],
   },
   {
     id: 'sit_keep_walking',
@@ -629,7 +675,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     time: 18,
     danger: 3,
     haunting: 4,
-    setups: ['moving', 'behind'],
+    preferredSetups: ['moving', 'behind'],
   },
   {
     id: 'sit_stop',
@@ -645,10 +691,11 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     time: 14,
     danger: 4,
     haunting: 5,
-    setups: ['moving', 'behind'],
+    preferredSetups: ['moving', 'behind'],
   },
   {
     id: 'sit_go_back',
+    relatedObjects: ['ghost', 'altar', 'bath', 'portraits'],
     label: 'GO BACK',
     desc: 'THE WAY YOU CAME',
     type: 'action',
@@ -660,11 +707,12 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     time: 22,
     danger: 4,
     haunting: 6,
-    setups: ['moving', 'returning'],
+    preferredSetups: ['roomTransition', 'returning', 'ghostLost'],
   },
   {
     // DON'T TURN AROUND を守り切った直後だけの追い討ち（§16）
     id: 'sit_now_turn',
+    relatedObjects: ['ghost', 'phone', 'mirror'],
     label: 'NOW TURN AROUND',
     desc: 'LOOK. RIGHT NOW.',
     type: 'action',
@@ -677,7 +725,25 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     time: 8,
     danger: 6,
     haunting: 9,
-    setups: ['object', 'behind', 'afterEvent', 'lingering'],
+    preferredSetups: ['behind', 'afterHorror', 'lingering', 'quietSuspense'],
+    chainRole: 'followup',
+  },
+  {
+    id: 'sit_dont_look_away',
+    relatedObjects: ['ghost', 'portraits', 'mirror', 'altar'],
+    label: "DON'T LOOK AWAY",
+    desc: 'KEEP YOUR CAMERA ON IT',
+    type: 'constraint',
+    reward: 3000,
+    riskTier: 3,
+    minHaunted: 18,
+    cooldown: 90,
+    weight: 1.0,
+    constraintSeconds: 5,
+    time: 18,
+    danger: 4,
+    haunting: 6,
+    preferredSetups: ['quietSuspense', 'lingering', 'afterHorror', 'behind'],
   },
   // ---------------- CHASE ----------------
   {
@@ -698,6 +764,42 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
   },
 ];
 
+/**
+ * 部屋ごとに「そこにいるだけで意味が通る」状況Request（§5, §38）。
+ * 全部を全部屋でONにはしない。Bath で KEEP WALKING は意味が薄い。
+ */
+export const ROOM_SITUATION_POOLS: Record<string, string[]> = {
+  entrance: ['sit_turn', 'sit_dont_turn', 'sit_look_behind', 'sit_stop', 'sit_keep_walking', 'sit_go_back'],
+  hallway: [
+    'sit_turn', 'sit_dont_turn', 'sit_look_behind', 'sit_stop',
+    'sit_keep_walking', 'sit_dont_move', 'sit_go_back',
+  ],
+  butsuma: [
+    'sit_dont_move', 'sit_turn', 'sit_dont_turn', 'sit_dont_look_away',
+    'sit_lights_off', 'sit_stay_here', 'sit_look_behind',
+  ],
+  washroom: ['sit_lights_off', 'sit_dont_move', 'sit_dont_look_away', 'sit_turn', 'sit_stay_here'],
+  bath: ['sit_dont_move', 'sit_turn', 'sit_dont_look_away', 'sit_stay_here', 'sit_lights_off'],
+  ldk: [
+    'sit_dont_move', 'sit_turn', 'sit_dont_turn', 'sit_dont_look_away',
+    'sit_go_back', 'sit_stay_here', 'sit_look_behind',
+  ],
+};
+
+/**
+ * 最近触ったオブジェクトから候補化する状況Request（§39-43）。
+ * 「さっき電話を切った」なら、振り向け・動くな、が自然に言える。
+ */
+export const OBJECT_SITUATION_POOLS: Record<string, string[]> = {
+  phone: ['sit_turn', 'sit_dont_move', 'sit_dont_turn', 'sit_stop', 'sit_look_behind'],
+  altar: ['sit_dont_move', 'sit_dont_look_away', 'sit_turn', 'sit_lights_off'],
+  bath: ['sit_dont_move', 'sit_turn', 'sit_go_back', 'sit_lights_off'],
+  ghost: ['sit_dont_look_away', 'sit_dont_turn', 'sit_turn', 'sit_go_back', 'sit_stay_here'],
+  portraits: ['sit_dont_look_away', 'sit_dont_move', 'sit_turn', 'sit_go_back'],
+  mirror: ['sit_lights_off', 'sit_dont_look_away', 'sit_dont_move', 'sit_turn'],
+  fridge: ['sit_dont_move', 'sit_turn', 'sit_lights_off'],
+};
+
 /* ------------------------------------------------------------------ *
  * Context / Director
  * ------------------------------------------------------------------ */
@@ -717,6 +819,8 @@ export interface Floor1Context {
   ghostOnScreen: boolean;
   selfie: boolean;
   lightOn: boolean;
+  /** 今カメラを向けている対象。KEEP LOOKING 系の成立判定に使う */
+  focusObject: string | null;
   goalReached: boolean;
   returning: boolean;
   /** 最後に意味のあることが起きてからの秒数 */
@@ -730,22 +834,16 @@ export interface Floor1Context {
    * 調べた対象が増えているのに Object Request が一度も出ていない状態は不自然。
    * これは保証ではなく、スコアへの加点にしか使わない。
    */
+  /** 直前に達成したリクエスト。連鎖の判定に使う */
+  lastCompleted: string | null;
   objectRequestNeed: number;
   /**
    * Situation Request がどれだけ足りていないか 0..1（§9-11）。
    * Object と取り合いにしない。別々に持つ。
    */
   situationRequestNeed: number;
-  /** 今どんな「お膳立て」が成立しているか */
-  setups: {
-    object: boolean;
-    moving: boolean;
-    lingering: boolean;
-    behind: boolean;
-    ghostLost: boolean;
-    returning: boolean;
-    afterEvent: boolean;
-  };
+  /** 今どんな「お膳立て」が成立しているか。値は 0..1 の強さ */
+  setups: Record<SituationSetup, number>;
   /** 直前に触った / 達成したオブジェクト。状況Requestはこれに紐づく */
   lastObject: string | null;
   /** その出来事からの経過秒 */
@@ -756,6 +854,10 @@ export interface Candidate {
   def: Floor1RequestDef;
   score: number;
   reasons: string[];
+  /** 世界で今まさに起きていることへの反応か（電話が鳴った、仏壇を調べた等） */
+  core?: boolean;
+  /** なぜ候補になれたか（room / nearby_object / recent_object / setup） */
+  eligibleBy: string[];
 }
 
 export interface Rejection {
@@ -795,11 +897,63 @@ export class Floor1Director {
    * 候補を絞る。
    * 「近くにいる」は**条件であってトリガーではない**。ここを通っても即提示はしない。
    */
-  private eligible(def: Floor1RequestDef, ctx: Floor1Context): string | null {
+  /**
+   * なぜ候補になれるのか。空なら候補にならない（§16, §60）。
+   *   room          その部屋にいるだけで意味が通る
+   *   nearby_object 関連オブジェクトが近い
+   *   recent_object 最近その対象に触った
+   *   setup         背後の音・幽霊を見失った等の明確なお膳立て
+   */
+  eligibleBy(def: Floor1RequestDef, ctx: Floor1Context): string[] {
+    const by: string[] = [];
+    if (ROOM_SITUATION_POOLS[ctx.room]?.includes(def.id)) by.push('room');
+    const related = def.relatedObjects ?? [];
+    const maxD = def.maxRelatedObjectDistance ?? CONFIG.floor1.situationContext.nearbyDistance;
+    for (const o of related) {
+      const d = o === 'ghost' ? ctx.ghostDistance : ctx.distances[o] ?? 999;
+      if (d <= maxD) {
+        by.push('nearby_object');
+        break;
+      }
+    }
+    const window = def.recentObjectWindow ?? CONFIG.floor1.situationContext.recentWindow;
+    if (ctx.lastObject && ctx.sinceObject <= window) {
+      if (OBJECT_SITUATION_POOLS[ctx.lastObject]?.includes(def.id)) by.push('recent_object');
+      else if (related.includes(ctx.lastObject)) by.push('recent_object');
+    }
+    for (const k of def.preferredSetups ?? []) {
+      if (k !== 'object' && ctx.setups[k] > 0) {
+        by.push('setup');
+        break;
+      }
+    }
+    return by;
+  }
+
+  /** 本当に意味が成立しないものだけ落とす（§17-22） */
+  private hardInvalid(def: Floor1RequestDef, ctx: Floor1Context): string | null {
+    // 既に暗いのに「電気を消せ」は成立しない
+    if (def.id === 'sit_lights_off' && !ctx.lightOn) return 'light_already_off';
+    // 見るものが無いのに「目を離すな」は成立しない
+    if (def.id === 'sit_dont_look_away' && !ctx.focusObject) return 'no_target_to_watch';
+    // 帰り道が無いのに「戻れ」は成立しない
+    if (def.id === 'sit_go_back' && !ctx.lastObject) return 'nowhere_to_go_back';
+    return null;
+  }
+
+  /** Offer 直前の再評価に使う。距離だけでなく全条件をやり直す（§49-50） */
+  revalidate(def: Floor1RequestDef, ctx: Floor1Context): string | null {
+    return this.eligible(def, ctx, true);
+  }
+
+  private eligible(def: Floor1RequestDef, ctx: Floor1Context, revalidating = false): string | null {
     if (def.oncePerRun && ctx.completed.has(def.id)) return 'once_per_run';
     const last = this.lastOffered.get(def.id);
     if (last !== undefined && this.elapsed - last < def.cooldown) return 'cooldown';
     if (this.offeredIds.slice(-5).includes(def.id)) return 'recent_repeat';
+    // 再評価では距離を少しだけ甘くする。歩いている途中で毎回落ちてしまうため
+    const slack = revalidating ? 1.25 : 1;
+    void slack;
 
     if (def.object) {
       const isGhost = def.object === 'ghost';
@@ -807,7 +961,7 @@ export class Floor1Director {
       if (isGhost && !ctx.discovered.has('ghost')) return 'not_discovered';
       const d = isGhost ? ctx.ghostDistance : ctx.distances[def.object];
       if (d === undefined) return 'no_distance';
-      if (def.maxDistance !== undefined && d > def.maxDistance) return 'too_far';
+      if (def.maxDistance !== undefined && d > def.maxDistance * slack) return 'too_far';
     }
     if (def.room && ctx.room !== def.room) return 'wrong_room';
 
@@ -829,17 +983,12 @@ export class Floor1Director {
     if (def.requiresVisible && !ctx.ghostOnScreen) return 'target_not_visible';
     if (def.lastTemptation && !ctx.returning) return 'not_returning';
 
-    // 状況Requestには「お膳立て」が要る。ただし直前のオブジェクトだけに限定しない。
-    // v1 では afterObject 必須にした結果、150秒のRunで状況Requestが1件しか出なかった。
+    // --- 状況Requestの Eligibility（§16, §69）---
+    // 「今これを言ったら完全に意味不明か」だけを見る。自然さの強弱は Score が決める。
     if (!def.object) {
-      const setups = def.setups ?? ['object'];
-      const ok = setups.some((k) => {
-        if (k !== 'object') return ctx.setups[k];
-        if (!ctx.lastObject) return false;
-        if (ctx.sinceObject > CONFIG.floor1.pacing.situationWindow) return false;
-        return !def.afterObject || def.afterObject.includes(ctx.lastObject);
-      });
-      if (!ok) return 'no_setup';
+      const hard = this.hardInvalid(def, ctx);
+      if (hard) return hard;
+      if (!this.eligibleBy(def, ctx).length) return 'no_context';
     }
     if (!def.lastTemptation && ctx.ghost === 'chasing' && def.id !== 'chase_film') return 'chasing';
     return null;
@@ -874,17 +1023,68 @@ export class Floor1Director {
         reasons.push('reengaged+12');
       }
     } else {
-      // 状況Requestは「直前にやったことの続き」としてだけ出す。
-      // 出来事から時間が経つほど価値が落ちる
-      const fresh = Math.max(0, 1 - ctx.sinceObject / CONFIG.floor1.pacing.situationWindow);
-      s += fresh * 12;
-      reasons.push(`after_${ctx.lastObject}+${(fresh * 12).toFixed(0)}`);
-      const sameCount = this.offeredIds.slice(-5).filter((id) =>
-        FLOOR1_POOL.find((p) => p.id === id && !p.object),
-      ).length;
-      if (sameCount > 0) {
-        s -= sameCount * 9;
-        reasons.push(`situation_fatigue-${sameCount * 9}`);
+      const cc = CONFIG.floor1.situationContext;
+      // 部屋・距離・履歴は「候補になれる理由」であって、足し合わせるものではない。
+      // 全部足すと状況Requestだけで Object を押しのけてしまう。一番強い理由だけ採る。
+      let ctxBonus = 0;
+      let ctxWhy = '-';
+      const consider = (v: number, why: string) => {
+        if (v > ctxBonus) {
+          ctxBonus = v;
+          ctxWhy = why;
+        }
+      };
+      if (ROOM_SITUATION_POOLS[ctx.room]?.includes(def.id)) consider(cc.roomBonus, `room:${ctx.room}`);
+      let nearest = 999;
+      for (const o of def.relatedObjects ?? []) {
+        const d = o === 'ghost' ? ctx.ghostDistance : ctx.distances[o] ?? 999;
+        nearest = Math.min(nearest, d);
+      }
+      if (nearest < 999) {
+        consider(nearest <= 3 ? cc.dist0 : nearest <= 6 ? cc.dist3 : nearest <= 10 ? cc.dist6 : 0, 'near');
+      }
+      if (ctx.lastObject && OBJECT_SITUATION_POOLS[ctx.lastObject]?.includes(def.id)) {
+        const t = ctx.sinceObject;
+        consider(t <= 5 ? cc.recent0 : t <= 12 ? cc.recent5 : t <= 20 ? cc.recent12 : 0, `after_${ctx.lastObject}`);
+      }
+      if (ctxBonus > 0) {
+        s += ctxBonus;
+        reasons.push(`${ctxWhy}+${ctxBonus}`);
+      }
+
+      // お膳立ては Gate ではなく順位を変えるもの（§3, §23-24）
+      const cfg = CONFIG.floor1.setupWeight;
+      let best = 0;
+      let bestKey = '-';
+      for (const k of def.preferredSetups ?? []) {
+        const strength = k === 'object'
+          ? Math.max(0, 1 - ctx.sinceObject / CONFIG.floor1.pacing.situationWindow)
+          : ctx.setups[k];
+        const v = strength * (cfg[k] ?? 12);
+        if (v > best) {
+          best = v;
+          bestKey = k;
+        }
+      }
+      if (best > 0) {
+        s += best;
+        reasons.push(`setup:${bestKey}+${best.toFixed(0)}`);
+      }
+
+      // 状況Requestが続きすぎないように。ただし連鎖の続きは免除する（§34）
+      if (def.chainRole !== 'followup') {
+        const sameCount = this.offeredIds.slice(-5).filter((id) =>
+          FLOOR1_POOL.find((p) => p.id === id && !p.object),
+        ).length;
+        if (sameCount > 0) {
+          s -= sameCount * 9;
+          reasons.push(`situation_fatigue-${sameCount * 9}`);
+        }
+      }
+      // 直前のRequestの続きなら強く押す（§35）
+      if (def.chainRole === 'followup' && def.afterRequest && ctx.lastCompleted === def.afterRequest) {
+        s += CONFIG.floor1.chainBonus;
+        reasons.push(`chain+${CONFIG.floor1.chainBonus}`);
       }
     }
 
@@ -919,7 +1119,7 @@ export class Floor1Director {
       reasons.push(`fatigue-${recentSameObject * 7}`);
     }
 
-    return { def, score: s, reasons };
+    return { def, score: s, reasons, eligibleBy: def.object ? ['object'] : this.eligibleBy(def, ctx) };
   }
 
   /** 候補を出す。null なら今は出さない（沈黙も正解） */
@@ -927,12 +1127,55 @@ export class Floor1Director {
    * Object Request が出ていない状態が続くほど、Object Request を押し出す。
    * Situation Request（DON'T TURN AROUND など）に埋め尽くされるのを防ぐ（§43）。
    */
+  /**
+   * Need は「救済」であって支配項ではない（§4）。
+   * 線形 ×26 だと Situation が常に勝ってしまうので、平方根で頭を打たせる。
+   * 互いを減点することは絶対にしない（§2）。
+   */
   private needBonus(def: Floor1RequestDef, ctx: Floor1Context) {
-    // Object と Situation は取り合いではない。それぞれの不足に応じて別々に押す（§9, §61）。
     const cfg = CONFIG.floor1.objectNeed;
-    return def.object
-      ? ctx.objectRequestNeed * cfg.objectBonus
-      : ctx.situationRequestNeed * cfg.situationBonus;
+    const need = def.object ? ctx.objectRequestNeed : ctx.situationRequestNeed;
+    if (need <= 0) return 0;
+    return cfg.needBonus * Math.sqrt(need);
+  }
+
+  /**
+   * 世界で今まさに何かが起きている瞬間を Viewer が拾う（§5-6, §46）。
+   * これは baseWeight を上げるのとは違い、**文脈が成立した時だけ**乗る。
+   */
+  private coreOpportunity(def: Floor1RequestDef, ctx: Floor1Context, reasons: string[]) {
+    const cfg = CONFIG.floor1.coreOpportunity;
+    let s = 0;
+    // 電話が鳴っている。これに反応しないViewerは不自然
+    if (def.object === 'phone' && ctx.states.phone === 'ringing' && def.id === 'phone_answer') {
+      s += cfg.phoneRinging;
+      reasons.push(`phoneRinging+${cfg.phoneRinging}`);
+      if ((ctx.distances.phone ?? 99) < 8) {
+        s += cfg.near;
+        reasons.push(`near+${cfg.near}`);
+      }
+    }
+    // 仏壇を調べて、まだ鳴らしていない
+    if (def.id === 'altar_beat' && ctx.discovered.has('altar') && !ctx.completed.has('altar_beat')) {
+      s += cfg.altarFresh;
+      reasons.push(`altarFresh+${cfg.altarFresh}`);
+      const att = ctx.attention.altar ?? 0;
+      if (att > 1.5) {
+        s += cfg.lookingAt;
+        reasons.push(`lookingAt+${cfg.lookingAt}`);
+      }
+    }
+    // 風呂を見つけた直後
+    if (def.id === 'bath_sip' && ctx.discovered.has('bath') && !ctx.completed.has('bath_sip')) {
+      s += cfg.freshObject;
+      reasons.push(`bathFresh+${cfg.freshObject}`);
+    }
+    // 幽霊を見つけた直後
+    if (def.id === 'ghost_closer' && ctx.discovered.has('ghost') && !ctx.completed.has('ghost_closer')) {
+      s += cfg.freshObject;
+      reasons.push(`ghostFresh+${cfg.freshObject}`);
+    }
+    return s;
   }
 
   select(ctx: Floor1Context): Floor1RequestDef | null {
@@ -951,24 +1194,39 @@ export class Floor1Director {
         const nb = this.needBonus(d, ctx);
         if (nb) {
           c.score += nb;
-          c.reasons.push(`objectNeed${nb > 0 ? '+' : ''}${nb.toFixed(0)}`);
+          c.reasons.push(`need+${nb.toFixed(0)}`);
         }
+        const core = this.coreOpportunity(d, ctx, c.reasons);
+        c.score += core;
+        c.core = core > 0;
         return c;
       })
       .sort((a, b) => b.score - a.score);
     this.lastCandidates = scored.slice(0, 5);
     if (!scored.length) return null;
 
-    // 上位3〜5件から重み付き抽選。毎回同じ順にはならない
+    // 上位3〜5件から重み付き抽選。毎回同じ順にはならない。
+    // 部屋だけで候補になったものも抽選に残す。順位は Score が決める
     const top = scored.slice(0, Math.min(5, scored.length)).filter((c) => c.score > 0);
     if (!top.length) return null;
-    const total = top.reduce((a, c) => a + c.score, 0);
-    let r = Math.random() * total;
-    for (const c of top) {
-      r -= c.score;
-      if (r <= 0) return c.def;
+
+    const pickFrom = (list: Candidate[]) => {
+      const total = list.reduce((a, c) => a + c.score, 0);
+      let r = Math.random() * total;
+      for (const c of list) {
+        r -= c.score;
+        if (r <= 0) return c.def;
+      }
+      return list[0].def;
+    };
+
+    // 電話が鳴っている・仏壇を今調べた、のような明確な機会では
+    // Object Request が高確率で勝ってよい（§46）。ただし固定はしない（§47）。
+    const core = top.filter((c) => c.core);
+    if (core.length && Math.random() < CONFIG.floor1.coreOpportunity.winRate) {
+      return pickFrom(core);
     }
-    return top[0].def;
+    return pickFrom(top);
   }
 }
 

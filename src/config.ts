@@ -679,6 +679,9 @@ export const CONFIG = {
     },
     ambientFadePerPoint: 0.5,
     ambientFadeMax: 13,
+    /** 見ている瞬間に起こす方が効く出来事（遺影の落下など） */
+    onScreenBonus: 26,
+    offScreenPenalty: 16,
     /**
      * 1Run で一度も出ていないイベントへの下駄。
      * 個別 baseWeight を触らずに、埋もれたイベントを拾えるようにする。
@@ -751,14 +754,69 @@ export const CONFIG = {
 
     /** [E] で触れる距離 */
     interactRange: 3.0,
+    /**
+     * お膳立ての強さ（§30）。
+     * 「何が今それを言わせているか」がはっきりしているほど自然な口出しになる。
+     */
+    setupWeight: {
+      object: 12,
+      behind: 25,
+      ghostLost: 22,
+      afterPhone: 18,
+      afterHorror: 15,
+      roomTransition: 12,
+      hallway: 10,
+      returning: 16,
+      lingering: 12,
+      moving: 11,
+      quietSuspense: 14,
+    } as Record<string, number>,
+    /**
+     * 状況Requestの文脈（§7, §11, §14）。
+     * Eligibility は広くONにして、ここで順位を決める。
+     */
+    situationContext: {
+      /** 関連オブジェクトがこの距離なら候補になれる */
+      nearbyDistance: 8,
+      /** 最近触った、とみなす秒数 */
+      recentWindow: 20,
+      roomBonus: 11,
+      dist0: 15,
+      dist3: 10,
+      dist6: 5,
+      recent0: 18,
+      recent5: 12,
+      recent12: 6,
+    },
+    /** 連鎖の続き（DON'T TURN AROUND → NOW TURN AROUND）への加点 */
+    chainBonus: 30,
+    /**
+     * 世界で今まさに起きていることを Viewer が拾う（§5-6）。
+     * 文脈が成立した時だけ乗る。baseWeight を上げるのとは別物。
+     */
+    coreOpportunity: {
+      phoneRinging: 38,
+      altarFresh: 22,
+      freshObject: 18,
+      lookingAt: 8,
+      /** 明確な機会があるとき、Object Request を選ぶ確率。1.0 にはしない（§47） */
+      winRate: 0.72,
+      near: 10,
+    },
     /** 状況Requestの「お膳立て」判定（§10-13） */
     setup: {
       movingFor: 2.5,
       lingeringFor: 4,
-      behindWindow: 6,
-      ghostLostWindow: 12,
-      afterEventFrom: 3,
-      afterEventTo: 14,
+      /** お膳立ての寿命（§28） */
+      behindLife: 10,
+      ghostLostLife: 13,
+      afterPhoneLife: 16,
+      afterHorrorLife: 12,
+      roomTransitionLife: 8,
+      /** 何も起きていないのに家がおかしい状態 */
+      quietFrom: 10,
+      quietSpan: 18,
+      quietHaunted: 15,
     },
     /**
      * Object Request の不足（§38-43）。
@@ -772,9 +830,11 @@ export const CONFIG = {
       /** 最後の Object Request からこれだけ経つと need が上がる */
       sinceFrom: 40,
       sinceTo: 110,
-      objectBonus: 26,
-      /** 状況Requestの不足に対する加点。Object を押しのける減点はしない */
-      situationBonus: 26,
+      /**
+       * Need は救済であって支配項ではない（§3-4）。
+       * bonus = needBonus * sqrt(need) で頭を打たせる。互いを減点しない。
+       */
+      needBonus: 18,
       /** 最後の状況Requestからこれだけ経つと need が上がる */
       situationFrom: 25,
       situationTo: 70,

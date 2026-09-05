@@ -100,7 +100,8 @@ export async function runRequestTests(game?: Game): Promise<RequestTestResult[]>
     let sips = 0;
     let sawUi = false;
     let sawUnlock = false;
-    for (let i = 0; i < 200 * 60 && sips === 0; i++) {
+    let dismissed = 0;
+    for (let i = 0; i < 240 * 60 && sips === 0; i++) {
       d.step(DT);
       const rr = f1.requestRuntime();
       if (rr.active && rr.relatedObject === 'bath') {
@@ -109,9 +110,14 @@ export async function runRequestTests(game?: Game): Promise<RequestTestResult[]>
           sawUnlock = true;
           d.key('KeyE');
         }
+      } else if (rr.active && i % 30 === 0) {
+        // 風呂を飲みたいプレイヤーは、関係ないリクエストを降りる
+        f1.dismiss();
+        dismissed += 1;
       }
       sips = f1.kpi().bathSips as number;
     }
+    void dismissed;
     add(
       '2 Requestが出れば飲める',
       sips > 0 && sawUi && sawUnlock,

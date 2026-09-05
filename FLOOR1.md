@@ -480,3 +480,127 @@ Situation: STAY HERE 14 / DON'T MOVE 10 / LIGHTS OFF 6 / DON'T TURN AROUND 6
            KEEP WALKING 3 / LOOK BEHIND YOU 3 / NOW TURN AROUND 1 / TURN AROUND 1
 Safe Peak 初回: 27〜63s（v1.3 の固定55〜65sから分散）
 ```
+
+
+---
+
+## RequestDirector v2 — Core Temptation と Situation Filler
+
+### 1. 状況Requestの Eligibility を広くONにする
+
+v1 は「最近オブジェクトに触っていること」が必須で、
+廊下を歩いて背後で足音が鳴っても `TURN AROUND` が候補にすら入らなかった。
+
+```text
+eligible = 部屋で意味が通る
+        || 関連オブジェクトが近い
+        || 最近その対象に触った
+        || 明確なお膳立てがある
+```
+
+**お膳立て（背後の音・幽霊を見失った・電話）は Gate ではなく Score のボーナス。**
+無くても部屋にいるだけで候補には入り、順位が下がるだけ。
+
+落とすのは本当に意味が通らないものだけ。
+
+```text
+sit_lights_off      既に暗い          → light_already_off
+sit_dont_look_away  見ている物が無い  → no_target_to_watch
+sit_go_back         戻る先が無い      → nowhere_to_go_back
+ghost_frame         今映っていない    → target_not_visible
+```
+
+### 2. 部屋ごとのプール
+
+```text
+hallway   TURN AROUND / DON'T TURN AROUND / LOOK BEHIND YOU / STOP / KEEP WALKING / DON'T MOVE / GO BACK
+butsuma   DON'T MOVE / TURN AROUND / DON'T TURN AROUND / DON'T LOOK AWAY / LIGHTS OFF / STAY HERE / LOOK BEHIND YOU
+washroom  LIGHTS OFF / DON'T MOVE / DON'T LOOK AWAY / TURN AROUND / STAY HERE
+bath      DON'T MOVE / TURN AROUND / DON'T LOOK AWAY / STAY HERE / LIGHTS OFF
+ldk       DON'T MOVE / TURN AROUND / DON'T TURN AROUND / DON'T LOOK AWAY / GO BACK / STAY HERE / LOOK BEHIND YOU
+```
+
+直前に触った対象からも候補化する。
+
+```text
+phone      TURN AROUND / DON'T MOVE / DON'T TURN AROUND / STOP / LOOK BEHIND YOU
+altar      DON'T MOVE / DON'T LOOK AWAY / TURN AROUND / LIGHTS OFF
+ghost      DON'T LOOK AWAY / DON'T TURN AROUND / TURN AROUND / GO BACK / STAY HERE
+```
+
+**部屋・距離・履歴は足し合わせない。一番強い理由だけを採る。**
+全部足すと状況Requestだけで Object を押しのけてしまう。
+
+### 3. Core Object Temptation
+
+世界で今まさに起きていることを Viewer が拾う。baseWeight を上げるのとは別物で、
+文脈が成立した時だけ乗る。
+
+```text
+電話が鳴っている → PICK IT UP      +38（近ければ +10）
+仏壇を調べた     → PLAY A BEAT     +22（見ていれば +8）
+風呂・幽霊の発見 → TAKE A SIP 等   +18
+```
+
+明確な機会があるときは **72% で Object Request を選ぶ**。残り 28% は通常の抽選なので、
+電話が鳴っているのに「動くな」と言われる Run も起こる（§47）。
+
+さらに、鳴った瞬間に待機中の候補を捨てて考え直す。
+そうしないと、鳴る前から並んでいた候補が先に出てしまう。
+
+### 4. Need は救済であって支配項ではない
+
+```text
+bonus = 18 * sqrt(need)     Object / Situation それぞれ独立
+```
+
+互いを減点しない。v1 は `Situation -= ObjectNeed * 20` で状況Requestを直接殺していた。
+
+### 5. 連鎖
+
+`chainRole: 'followup'` は状況Requestの連発ペナルティを免除する。
+`DON'T TURN AROUND` を守り切った後の `NOW TURN AROUND` が fatigue で消えていた。
+
+### 6. Offer 直前の完全再評価
+
+`stillValid()`（距離と Chase だけ）を廃止し、`revalidate()` が最初と同じ条件を全部やり直す。
+部屋・オブジェクト状態・幽霊の状態・可視性・記憶・Haunted・お膳立て・連鎖まで。
+
+### 7. 遺影は見ている時に落ちる
+
+Viewer Request ではなく World Horror Event（§54）。
+`preferOnScreen` で、見ている時 +26 / 見ていない時 -16。
+音だけ聞こえる `PortraitFellUnseen` は残すが重みは低い。
+`[E]` の Inspect では落ちない。
+
+### 8. ファネル計測
+
+```text
+request_eligibility_checked / request_candidate_scored（eligible_by 付き）
+request_candidate_warmup / request_candidate_cancelled / request_offered
+```
+
+### 9. 実測（10 Run）
+
+| | Before | After |
+| --- | --- | --- |
+| Request | 150秒で4件 | 3.4〜6.7分で 6〜18件 |
+| Object : Situation | 3 : 1 | 44 : 74 |
+| 状況Requestの種類 | 1 | 10〜12 |
+| 候補数 | 1〜3 | 平均 6.1（4〜8） |
+| 平均間隔 | — | 24.8s（最長 51.3s） |
+
+```text
+PICK IT UP      85% （20シード。他に sit_stay_here / sit_turn）
+PLAY A BEAT     80% （20シード。他に sit_turn / sit_look_behind / sit_stay_here）
+背後の足音      20/20 で状況Request。TURN AROUND / LOOK BEHIND YOU / STAY HERE
+NOW TURN AROUND 12/12 で候補入り（最高スコア 69）
+KEEP IN FRAME   見えていない幽霊への提示 0/15
+遺影            Inspectで落ちた 0 ／ 見ている時 15 ／ 見ていない時 0
+```
+
+候補の内訳（eligible_by）:
+
+```text
+room 54 / setup 38 / nearby_object 31 / recent_object 29 / object 11
+```

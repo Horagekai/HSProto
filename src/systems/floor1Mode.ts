@@ -10,6 +10,7 @@ import { FLOOR1_POOL,
   type Floor1Context,
   type Floor1RequestDef,
   type GhostState,
+  type SituationSetup,
 } from './floor1';
 import { FLOOR1_OBJECTS, roomAt, type Floor1Room } from '../world/floor1Level';
 import { HorrorDirector, type GhostAction, type HorrorEventDef, type RunPhase } from './horrorDirector';
@@ -119,6 +120,11 @@ export interface ActiveRequest {
 }
 
 const SOFA = { x: -9.3, z: -8 };
+
+/** 「振り向く / 振り向くな」系 */
+const TURN_FAMILY = new Set([
+  'sit_turn', 'sit_dont_turn', 'sit_now_turn', 'sit_look_behind', 'sit_turn_last',
+]);
 
 /** Request が解放されているときだけ出る [E] の動詞 */
 const ACTION_VERB: Record<string, string> = {
@@ -243,12 +249,51 @@ export class Floor1Mode {
   objectRequestsOffered = 0;
   situationRequestsOffered = 0;
   private lastObjectRequestAt = 0;
+  /** 直前に達成したリクエスト。連鎖の判定に使う */
+  private lastCompleted: string | null = null;
+  private interrupted = new Set<string>();
+  /** Offer 直前の再評価で捨てた候補の数 */
+  cancelled = 0;
+  /**
+   * Request ファネル（§72-77）。
+   * Weight を触る前に、どこで候補が消えているのかを見られるようにする。
+   */
+  funnel = {
+    checked: 0,
+    eligible: 0,
+    scored: { object: 0, situation: 0 },
+    positive: { object: 0, situation: 0 },
+    warmup: { object: 0, situation: 0 },
+    cancelled: { object: 0, situation: 0 },
+    offered: { object: 0, situation: 0 },
+    rejections: new Map<string, number>(),
+    eligibleBy: new Map<string, number>(),
+    candidateCounts: [] as number[],
+  };
+  /** Core Opportunity の計測（§79） */
+  opportunities = {
+    phoneRinging: 0,
+    phonePickupOffered: 0,
+    altarInspected: 0,
+    altarBeatOffered: 0,
+    bathDiscovered: 0,
+    bathOffered: 0,
+    ghostDiscovered: 0,
+    ghostOffered: 0,
+    behindSetups: 0,
+    turnFamilyOffered: 0,
+    ghostLostSetups: 0,
+  };
+  /** 提示時刻。間隔の統計に使う */
+  offerTimes: number[] = [];
   private lastSituationRequestAt = 0;
   /** 移動している / 立ち止まっている時間 */
   private movingTime = 0;
   private stillTime = 0;
   /** 背後で何かが起きた時刻 */
   private behindAt = -999;
+  private phoneEventAt = -999;
+  private horrorAt = -999;
   /** 最後に幽霊が見えていた時刻 */
   private ghostSeenAt = -999;
   /** 部屋が変わった時刻 */
@@ -318,10 +363,41 @@ export class Floor1Mode {
     this.objectRequestsOffered = 0;
     this.situationRequestsOffered = 0;
     this.lastObjectRequestAt = 0;
+    this.lastCompleted = null;
+    this.interrupted.clear();
+    this.cancelled = 0;
+    this.funnel = {
+      checked: 0,
+      eligible: 0,
+      scored: { object: 0, situation: 0 },
+      positive: { object: 0, situation: 0 },
+      warmup: { object: 0, situation: 0 },
+      cancelled: { object: 0, situation: 0 },
+      offered: { object: 0, situation: 0 },
+      rejections: new Map<string, number>(),
+      eligibleBy: new Map<string, number>(),
+      candidateCounts: [] as number[],
+    };
+    this.opportunities = {
+      phoneRinging: 0,
+      phonePickupOffered: 0,
+      altarInspected: 0,
+      altarBeatOffered: 0,
+      bathDiscovered: 0,
+      bathOffered: 0,
+      ghostDiscovered: 0,
+      ghostOffered: 0,
+      behindSetups: 0,
+      turnFamilyOffered: 0,
+      ghostLostSetups: 0,
+    };
+    this.offerTimes = [];
     this.lastSituationRequestAt = 0;
     this.movingTime = 0;
     this.stillTime = 0;
     this.behindAt = -999;
+    this.phoneEventAt = -999;
+    this.horrorAt = -999;
     this.ghostSeenAt = -999;
     this.lastRoom = null;
     this.roomChangedAt = -999;
@@ -435,6 +511,10 @@ export class Floor1Mode {
   }
 
   private discover(id: string, label: string, likes: number) {
+    if (id === 'bath') this.opportunities.bathDiscovered += 1;
+    if (id === 'ghost') this.opportunities.ghostDiscovered += 1;
+    // 発見トーストと視聴者の反応を見せる間を作る（§69-70）
+    this.quiet = Math.max(this.quiet, CONFIG.floor1.pacing.afterDiscovery);
     const st = this.objects.get(id);
     if (!st || st.discovered) return;
     st.discovered = true;
@@ -515,6 +595,11 @@ export class Floor1Mode {
       `object=${id} state=${st.state} count=${st.interactions} first=${first}`,
     );
 
+    if (id === 'altar') {
+      this.opportunities.altarInspected += 1;
+      if (!this.completedIds.has('altar_beat')) this.interruptForOpportunity('altar_inspected');
+    }
+    if (id === 'bath' && !this.completedIds.has('bath_sip')) this.interruptForOpportunity('bath_inspected');
     this.d.toast(INSPECT_TEXT[id]?.[st.state] ?? INSPECT_TEXT[id]?.default ?? 'NOTHING HERE', 1.6);
     // 視聴者が煽る。ただしこれは Request ではない（§47）
     if (first) {
@@ -559,21 +644,8 @@ export class Floor1Mode {
 
   private interactPortrait(state: string) {
     if (state === 'normal') {
-      // 少し間を置いて落ちる
+      // 落下は Player の行動ではなく World Horror Event（§54）。ここでは何も起こさない
       this.d.toast('...', 1.2);
-      window.setTimeout(() => {
-        if (this.objects.get('portraits')?.state !== 'normal') return;
-        this.objects.setState('portraits', 'fallen');
-        this.d.dropPortrait();
-        this.d.sfxKnock(2);
-        this.d.addLikes(100);
-        this.d.spikeViewers(1.18);
-        this.d.footage('THE PORTRAIT FELL   +100 Likes', 2.4);
-        this.d.chat('anomaly', 3);
-        this.d.addHaunting(4);
-        this.markEvent('anomaly');
-        this.d.log('subject_state_changed', 'subject=portraits old=hanging new=fallen');
-      }, 1400);
       return true;
     }
     if (state === 'fallen') {
@@ -1042,11 +1114,23 @@ export class Floor1Mode {
         break;
       // ---- Safe Suspense Peak。強い演出だが危険は増やさない ----
       case 'PortraitCrash':
+        // 見ている目の前で落ちる（§56）。ガラスが割れる
         this.objects.setState('portraits', 'fallen');
         this.d.dropPortrait();
-        this.d.sfxKnock(2);
-        this.d.footage('THE PORTRAITS CAME DOWN', 3);
-        this.d.hint('THE PORTRAITS CAME DOWN', 3);
+        this.d.sfxKnock(1.5);
+        this.d.footage('THE PORTRAIT CAME DOWN   +120 Likes', 3);
+        this.d.hint('IT FELL WHILE YOU WERE LOOKING', 3);
+        this.d.addLikes(120);
+        this.d.spikeViewers(1.2);
+        this.d.chat('anomaly', 3);
+        this.d.addHaunting(3);
+        break;
+      case 'PortraitFellUnseen':
+        // 音だけ聞こえて、戻ったら落ちている版
+        this.objects.setState('portraits', 'fallen');
+        this.d.dropPortrait();
+        this.d.sfxKnock(14);
+        this.d.hint('SOMETHING FELL IN THE OTHER ROOM', 2.6);
         this.d.addHaunting(2);
         break;
       case 'PhoneSuddenRing':
@@ -1092,6 +1176,8 @@ export class Floor1Mode {
 
     // 背後で起きたことは TURN AROUND 系のお膳立てになる
     if (def.tags?.includes('behind') || def.family === 'GHOST_SPATIAL') this.markBehindEvent();
+    if (def.family === 'PHONE') this.markPhoneEvent();
+    if (def.intensity !== 'subtle') this.horrorAt = this.elapsed;
     const tags = def.requiredMemories?.length ? `memory=${def.requiredMemories[0]}` : '';
     this.d.chat(def.intensity === 'subtle' ? 'idle' : 'anomaly', def.intensity === 'subtle' ? 1 : 2);
     this.markEvent('anomaly');
@@ -1156,6 +1242,7 @@ export class Floor1Mode {
       })(),
       selfie: this.d.selfie(),
       lightOn: this.d.lightOn(),
+      focusObject: this.focusObject(),
       goalReached: this.goal,
       returning: this.returningTime > 1.5 && this.d.distanceToEntrance() < 14,
       sinceEvent: this.sinceEvent,
@@ -1164,6 +1251,7 @@ export class Floor1Mode {
       objectRequestNeed: this.objectRequestNeed(),
       situationRequestNeed: this.situationRequestNeed(),
       setups: this.currentSetups(),
+      lastCompleted: this.lastCompleted,
       lastObject: this.lastObject,
       sinceObject: this.sinceObject,
     };
@@ -1234,12 +1322,16 @@ export class Floor1Mode {
       if (this.pendingDelay <= 0) {
         this.pendingDef = null;
         // 出す直前にもう一度文脈を確認する（§36）
-        if (this.stillValid(def, ctx)) this.offer(def);
+        // §48-50。距離と Chase だけでなく、最初と同じ条件を全部やり直す
+        const why = this.director.revalidate(def, ctx);
+        if (!why) this.offer(def);
         else {
           this.d.log(
-            'request_candidate_rejected',
-            `id=${def.id} reason=context_changed age=${this.pendingAge.toFixed(1)}`,
+            'request_candidate_cancelled',
+            `id=${def.id} category=${def.object ? 'object' : 'situation'} reason=${why} age=${this.pendingAge.toFixed(1)}`,
           );
+          this.cancelled += 1;
+          this.funnel.cancelled[def.object ? 'object' : 'situation'] += 1;
           this.quiet = randRange(2, 5);
         }
       }
@@ -1252,9 +1344,32 @@ export class Floor1Mode {
 
     const ctx = this.context();
     const def = this.director.select(ctx);
-    for (const c of this.director.lastCandidates) {
-      this.d.log('request_candidate_generated', `id=${c.def.id} score=${c.score.toFixed(1)} ${c.reasons.join(',')}`);
+    // --- ファネル計測（§72-77）---
+    this.funnel.checked += FLOOR1_POOL.length;
+    for (const r of this.director.lastRejections) {
+      this.funnel.rejections.set(r.reason, (this.funnel.rejections.get(r.reason) ?? 0) + 1);
     }
+    const eligibleNow = FLOOR1_POOL.length - this.director.lastRejections.length;
+    this.funnel.eligible += eligibleNow;
+    this.funnel.candidateCounts.push(eligibleNow);
+    for (const c of this.director.lastCandidates) {
+      const cat = c.def.object ? 'object' : 'situation';
+      this.funnel.scored[cat] += 1;
+      if (c.score > 0) this.funnel.positive[cat] += 1;
+      for (const e of c.eligibleBy) {
+        this.funnel.eligibleBy.set(e, (this.funnel.eligibleBy.get(e) ?? 0) + 1);
+      }
+      this.d.log(
+        'request_candidate_scored',
+        `id=${c.def.id} category=${cat} eligible_by=${c.eligibleBy.join('+') || '-'} ` +
+          `room=${this.room()} score=${c.score.toFixed(1)} ${c.reasons.join(',')}`,
+      );
+    }
+    this.d.log(
+      'request_eligibility_checked',
+      `checked=${FLOOR1_POOL.length} eligible=${FLOOR1_POOL.length - this.director.lastRejections.length} ` +
+        `top=${this.director.lastCandidates.map((c) => `${c.def.id}:${c.score.toFixed(0)}`).join('|') || '-'}`,
+    );
     if (!def) {
       // 候補が無いだけ。すぐ見直す
       this.quiet = randRange(2, 4.5);
@@ -1265,9 +1380,11 @@ export class Floor1Mode {
     this.pendingDelay = randRange(pace.offerDelay.min, pace.offerDelay.max);
     this.pendingAge = 0;
     this.pendingDeferred = 0;
+    const cat = def.object ? 'object' : 'situation';
+    this.funnel.warmup[cat] += 1;
     this.d.log(
-      'request_candidate_generated',
-      `id=${def.id} warmup=${this.pendingDelay.toFixed(1)} object=${def.object ?? '-'}`,
+      'request_candidate_warmup',
+      `id=${def.id} category=${cat} warmup=${this.pendingDelay.toFixed(1)} object=${def.object ?? '-'}`,
     );
 
     // 少し前に視聴者が匂わせる（毎回はやらない）
@@ -1281,33 +1398,79 @@ export class Floor1Mode {
    * 今どんな「お膳立て」が成立しているか（§10-13）。
    * 状況Requestは、これが1つでも立っていれば候補になれる。
    */
-  private currentSetups() {
+  private currentSetups(): Record<SituationSetup, number> {
     const cfg = CONFIG.floor1.setup;
     const ghostVisible = (() => {
       const g = this.ghost === 'seated' ? SOFA : this.d.ghostPos();
       return this.d.isVisible(g.x, g.z, 1.3);
     })();
     if (ghostVisible) this.ghostSeenAt = this.elapsed;
+
+    // 寿命つきで、時間が経つほど弱くなる（§28）
+    const decay = (at: number, life: number) => {
+      const age = this.elapsed - at;
+      if (age < 0 || age > life) return 0;
+      return 1 - age / life;
+    };
+
+    const room = this.room();
+    const sinceGhost = this.elapsed - this.ghostSeenAt;
     return {
-      object: !!this.lastObject && this.sinceObject <= CONFIG.floor1.pacing.situationWindow,
-      moving: this.movingTime > cfg.movingFor,
-      lingering: this.stillTime > cfg.lingeringFor,
-      // 背後で何かがあった直後
-      behind: this.elapsed - this.behindAt < cfg.behindWindow,
-      // 見えていた幽霊を見失った
+      object:
+        this.lastObject && this.sinceObject <= CONFIG.floor1.pacing.situationWindow
+          ? 1 - this.sinceObject / CONFIG.floor1.pacing.situationWindow
+          : 0,
+      behind: decay(this.behindAt, cfg.behindLife),
       ghostLost:
-        this.objects.get('ghost')?.discovered === true &&
-        !ghostVisible &&
-        this.elapsed - this.ghostSeenAt < cfg.ghostLostWindow &&
-        this.elapsed - this.ghostSeenAt > 1.5,
-      returning: this.returningTime > 1.5 && this.d.distanceToEntrance() < 20,
-      afterEvent: this.sinceEvent > cfg.afterEventFrom && this.sinceEvent < cfg.afterEventTo,
+        this.objects.get('ghost')?.discovered && !ghostVisible && sinceGhost > 1.5
+          ? decay(this.ghostSeenAt + 1.5, cfg.ghostLostLife)
+          : 0,
+      afterPhone: decay(this.phoneEventAt, cfg.afterPhoneLife),
+      afterHorror: decay(this.horrorAt, cfg.afterHorrorLife),
+      roomTransition: decay(this.roomChangedAt, cfg.roomTransitionLife),
+      hallway: room === 'hallway' || room === 'entrance' ? 1 : 0,
+      returning: this.returningTime > 1.5 && this.d.distanceToEntrance() < 20 ? 1 : 0,
+      lingering: this.stillTime > cfg.lingeringFor ? Math.min(1, this.stillTime / (cfg.lingeringFor * 2)) : 0,
+      moving: this.movingTime > cfg.movingFor ? Math.min(1, this.movingTime / (cfg.movingFor * 2)) : 0,
+      // 何も起きていないが、家は既におかしい
+      quietSuspense:
+        this.sinceEvent > cfg.quietFrom && this.d.haunting() > cfg.quietHaunted
+          ? Math.min(1, (this.sinceEvent - cfg.quietFrom) / cfg.quietSpan)
+          : 0,
     };
   }
 
-  /** 背後で何かが起きた。TURN AROUND 系のお膳立てになる（§13, §14） */
+  /** 背後で何かが起きた。TURN AROUND 系のお膳立てになる（§27, §29） */
   markBehindEvent() {
     this.behindAt = this.elapsed;
+    this.opportunities.behindSetups += 1;
+    this.d.log('situation_setup_created', `setup=behind at=${this.elapsed.toFixed(1)}`);
+  }
+
+  /**
+   * 世界で今まさに何かが起きた。待機中の候補を捨てて考え直す（§71）。
+   * 電話が鳴っているのに、その前から並んでいた「動くな」が先に出るのは不自然。
+   */
+  private interruptForOpportunity(what: string) {
+    // 同じ機会で何度も割り込まない。E連打で候補が永久に温まらなくなる
+    if (this.interrupted.has(what)) return;
+    this.interrupted.add(what);
+    if (this.pendingDef) {
+      this.d.log(
+        'request_candidate_cancelled',
+        `id=${this.pendingDef.id} reason=core_opportunity:${what} age=${this.pendingAge.toFixed(1)}`,
+      );
+      this.pendingDef = null;
+    }
+    this.quiet = Math.min(this.quiet, randRange(0.8, 2.5));
+  }
+
+  /** 電話まわりで何かがあった */
+  markPhoneEvent() {
+    this.phoneEventAt = this.elapsed;
+    this.opportunities.phoneRinging += 1;
+    if (this.objects.get('phone')?.state === 'ringing') this.interruptForOpportunity('phone_ringing');
+    this.d.log('situation_setup_created', `setup=afterPhone at=${this.elapsed.toFixed(1)}`);
   }
 
   /**
@@ -1338,14 +1501,7 @@ export class Floor1Mode {
     return clamp01((eff - cfg.inspectedFrom) / (cfg.inspectedTo - cfg.inspectedFrom));
   }
 
-  private stillValid(def: Floor1RequestDef, ctx: Floor1Context) {
-    if (def.object) {
-      const d = def.object === 'ghost' ? ctx.ghostDistance : ctx.distances[def.object] ?? 999;
-      if (def.maxDistance !== undefined && d > def.maxDistance * 1.6) return false;
-    }
-    if (ctx.ghost === 'chasing' && def.id !== 'chase_film') return false;
-    return true;
-  }
+
 
   private offer(def: Floor1RequestDef) {
     // §7。ログより先に権威ある状態を作る。順序を逆にすると
@@ -1374,6 +1530,13 @@ export class Floor1Mode {
     else this.situationRequestsOffered += 1;
     if (def.object) this.lastObjectRequestAt = this.elapsed;
     else this.lastSituationRequestAt = this.elapsed;
+    this.funnel.offered[def.object ? 'object' : 'situation'] += 1;
+    this.offerTimes.push(this.elapsed);
+    if (def.id === 'phone_answer') this.opportunities.phonePickupOffered += 1;
+    if (def.id === 'altar_beat') this.opportunities.altarBeatOffered += 1;
+    if (def.object === 'bath') this.opportunities.bathOffered += 1;
+    if (def.object === 'ghost') this.opportunities.ghostOffered += 1;
+    if (TURN_FAMILY.has(def.id)) this.opportunities.turnFamilyOffered += 1;
     if (this.uniqueRequests.has(def.id)) this.repeatedRequests += 1;
     this.uniqueRequests.add(def.id);
     this.offeredHistory.push(def.id);
@@ -1428,6 +1591,7 @@ export class Floor1Mode {
 
   private finish(a: ActiveRequest, reward: number) {
     a.state = 'completed';
+    this.lastCompleted = a.def.id;
     this.d.footage(`REQUEST COMPLETE   +¥${reward.toLocaleString()}`, 1.4);
     this.completed += 1;
     this.completedIds.add(a.def.id);
@@ -1759,6 +1923,7 @@ export class Floor1Mode {
     }
     this.phoneTimer = randRange(45, 80);
     this.objects.setState('phone', 'ringing');
+    this.markPhoneEvent();
     this.d.sfxPhone(this.objDistance('phone'));
     this.d.addLikes(80);
     this.d.footage('THE PHONE IS RINGING   +80 Likes', 2.4);
@@ -1794,6 +1959,7 @@ export class Floor1Mode {
       memories: this.memory.all(),
       memoryAge: this.memory.ages(),
       focusObject: this.focusObject(),
+      focusCenter: this.focusCenter(),
       activeRequestId: this.active?.def.id ?? null,
       activeRequestType: this.active?.def.type ?? null,
       lastRiskTier: this.lastRiskTier,
@@ -1827,6 +1993,18 @@ export class Floor1Mode {
     const g = this.ghost === 'seated' ? SOFA : this.d.ghostPos();
     if (this.d.centerOf(g.x, g.z, 1.3) > bestC) return 'ghost';
     return best;
+  }
+
+  /** 今見ている対象がどれくらい画面中央にあるか 0..1 */
+  private focusCenter(): number {
+    const id = this.focusObject();
+    if (!id) return 0;
+    if (id === 'ghost') {
+      const g = this.ghost === 'seated' ? SOFA : this.d.ghostPos();
+      return this.d.centerOf(g.x, g.z, 1.3);
+    }
+    const o = FLOOR1_OBJECTS.find((x) => x.id === id);
+    return o ? this.d.centerOf(o.x, o.z, o.height) : 0;
   }
 
   /** UIへ渡す */
@@ -2126,6 +2304,27 @@ export class Floor1Mode {
       medianPhoneHold: median(phone.map((h) => h.seconds)),
       phoneTier2: phone.filter((h) => h.tier >= 2).length,
       goal: this.goal,
+      funnel: {
+        checked: this.funnel.checked,
+        eligible: this.funnel.eligible,
+        scored: this.funnel.scored,
+        positive: this.funnel.positive,
+        warmup: this.funnel.warmup,
+        cancelled: this.funnel.cancelled,
+        offered: this.funnel.offered,
+        rejections: [...this.funnel.rejections.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10),
+        eligibleBy: [...this.funnel.eligibleBy.entries()].sort((a, b) => b[1] - a[1]),
+        avgCandidates: this.funnel.candidateCounts.length
+          ? Math.round(
+              (this.funnel.candidateCounts.reduce((a, b) => a + b, 0) /
+                this.funnel.candidateCounts.length) * 10,
+            ) / 10
+          : 0,
+        minCandidates: this.funnel.candidateCounts.length ? Math.min(...this.funnel.candidateCounts) : 0,
+        maxCandidates: this.funnel.candidateCounts.length ? Math.max(...this.funnel.candidateCounts) : 0,
+      },
+      opportunities: { ...this.opportunities },
+      offerTimes: [...this.offerTimes],
       objectRequestsOffered: this.objectRequestsOffered,
       situationRequestsOffered: this.situationRequestsOffered,
       invalidSpecialActions: this.invalidSpecialActions,

@@ -46,6 +46,7 @@ function ctxOf(over: Partial<HorrorContext> = {}): HorrorContext {
     memories: new Set<string>(),
     memoryAge: {},
     focusObject: null,
+    focusCenter: 0,
     activeRequestId: null,
     activeRequestType: null,
     lastRiskTier: 0,

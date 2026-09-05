@@ -105,6 +105,8 @@ export interface HorrorEventDef {
 
   /** 発火までの溜め */
   anticipationDelay?: [number, number];
+  /** 見ている瞬間に起こす方が効く出来事か（§55-58） */
+  preferOnScreen?: boolean;
   /** Ghost へ出す行動要求 */
   ghostAction?: GhostAction;
   /**
@@ -153,6 +155,8 @@ export interface HorrorContext {
 
   /** 今カメラを向けている対象 */
   focusObject: string | null;
+  /** その対象が今どれくらい画面中央にあるか 0..1 */
+  focusCenter: number;
   /** 進行中のリクエスト */
   activeRequestId: string | null;
   activeRequestType: string | null;
@@ -961,6 +965,20 @@ export class HorrorDirector {
       const fit = 12 - Math.abs(want - tr) * 7;
       s += fit;
       tags.push(`threatFit${fit >= 0 ? '+' : ''}${fit.toFixed(0)}`);
+    }
+
+    // 見ている瞬間に起きる方が怖い出来事がある（§55-58）。
+    // 遺影が落ちるのは、音だけ聞くより目の前で落ちる方が効く。
+    if (def.preferOnScreen) {
+      if (ctx.focusObject === def.relatedObject && ctx.focusCenter > 0.25) {
+        const b = CONFIG.horror.onScreenBonus;
+        s += b;
+        tags.push(`onScreen+${b}`);
+      } else {
+        const p = CONFIG.horror.offScreenPenalty;
+        s -= p;
+        tags.push(`offScreen-${p}`);
+      }
     }
 
     // --- 今どこを見ているか ---
