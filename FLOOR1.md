@@ -862,3 +862,99 @@ UI 誘導・マーカー・矢印は使わない。仏間をまだ見つけて�
 
 55% の確率で、1 Run に最大2回。仏壇を見つけたら止まる。
 これは Request ではない（§49）。
+
+
+---
+
+## Viewer Pulse（FLOOR 1 のみ）
+
+視聴者群衆の「今どれくらい口数が多いか」を 0..1 で持つだけの軽量サービス
+（[`src/systems/viewerActivity.ts`](src/systems/viewerActivity.ts)）。
+
+**責務は「いつ口を開きやすいか」だけ。** 何を言うかには一切関与しない。
+
+```text
+                 RunSeed
+                    │
+              Viewer Pulse
+     Long Noise + Short Noise + Event Impulse
+              + Silence Debt − Fatigue
+                    │
+        ┌───────────┴───────────┐
+   ReactionDirector        RequestDirector
+   コメント密度             Request の間隔だけ
+                                │
+                        Eligibility / Utility（不変）
+```
+
+HorrorDirector はこの系統の外に置く。繋ぐと
+「盛り上がる → Request → Horror → 盛り上がる」が毎回同じ周期になるため。
+
+### 波
+
+```text
+Long   45秒（値ノイズ。三角関数を足すだけだと周期が読まれる）
+Short  11秒
+weight 0.75 / 0.25
+seed   hash(runSeed, "viewer_activity_long" / "_short")
+```
+
+壁時計は種にしない。同じ RunSeed なら波は完全に一致する。
+
+### 出来事・疲れ・無音
+
+```text
+effective = natural + eventImpulse + silenceDebt − fatigue
+
+impulse   discovery 0.06 / phone_ring 0.18 / portrait_crash 0.20 / ghost_reveal 0.30
+          bath_sip 0.35 / altar_overplayed 0.22 / ghost_selfie 0.28
+          risky_request 0.25 / chase_start 0.35   上限 0.6、9秒で消える
+fatigue   自然な波+出来事が 0.7 を超え続けると 0.05/s で溜まり、静かなら 0.035/s で戻る（上限 0.3）
+debt      無音 8秒を超えたぶんだけ床が上がる（上限 0.25）。誰かが喋ると 0 に戻る
+```
+
+疲れは **silenceDebt を含めずに**判定する。
+「誰も喋っていないから床を上げた」分で疲れるのは意味が通らない。
+
+### 効かせ方
+
+```text
+コメント   波を4秒先読み + impulse をそのまま
+Request    波は先読みせず + impulse は 0.6 倍
+状況Request  0.6x 〜 1.4x
+Core         0.95x 〜 1.05x   （文脈で決まるものなので波はほぼ効かせない）
+Hard Minimum Gap 8秒  ← 波がどれだけ高くても破らない
+```
+
+### タイトル画面の調整バー
+
+理想値を決め打ちせず、実験できるようにしてある。
+`VIEWER NOISE ▸` から ON/OFF・長い波・短い波・比重・コメント先行を変更でき、次の Run から効く。
+
+### 検証（14/14）
+
+```text
+同じ種なら同じ波            300点が完全一致
+別の種なら別の波            一致 0/300
+波が偏っていない            min 0.11 max 0.94 平均 0.58
+山の間隔が一定でない        21回 平均25s ばらつき18s
+コメントがRequestより先行   offset 4s
+Coreは波に左右されない      Core 0.95〜1.05x / 状況 0.6〜1.4x
+最短間隔を破らない          最短 16.6s（下限 8s）
+高いところに寄るが固定でない 提示時の平均 0.51、静かな時の提示 2/10
+出来事で跳ねて戻る          0.35 → 0.55、9秒で 0
+盛り上がると疲れる          最大 0.30 → 静かにすると 0.00
+無音で床が上がる            40秒で 0.25 → 発言後 0
+出来事なしでも波が動く      幅 0.51
+```
+
+### Pulse OFF / ON
+
+```text
+              requests/min  中央値  平均   ばらつき  最長の無音
+OFF           2.13          28.5s  28.4s  7.8s      44.8s
+ON            2.27          27.8s  27.3s  10.8s     50.5s
+```
+
+件数はほぼ変えずに、**間隔のばらつきが 7.8 → 10.8 秒**（+38%）。
+狙いは Request を増やすことではなく、呼吸を作ること。

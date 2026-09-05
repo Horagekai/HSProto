@@ -248,6 +248,22 @@ export interface Snapshot {
       selected: string;
     };
   } | null;
+  /** 視聴者の活動量（FLOOR 1 のみ。デバッグ表示用） */
+  viewerNoise: {
+    seed: number;
+    activity: number;
+    natural: number;
+    long: number;
+    short: number;
+    impulse: number;
+    fatigue: number;
+    debt: number;
+    reaction: number;
+    request: number;
+    phase: string;
+    trace: number[];
+    offers: number[];
+  } | null;
   /** Novelty / Risk の内訳（デバッグパネルでのみ表示。通常UIには出さない） */
   stateKey: string;
   repeatCount: number;
@@ -300,6 +316,7 @@ const initial: Snapshot = {
   playerPos: { x: 0, z: 0 },
   dismissHold: 0,
   f1Debug: null,
+  viewerNoise: null,
   stateKey: '',
   repeatCount: 0,
   novelty: 1,

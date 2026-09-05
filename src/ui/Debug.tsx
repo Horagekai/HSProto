@@ -15,6 +15,33 @@ const GHOST_STATE: Record<MonsterState, string> = {
   chasing: 'CHASING',
 };
 
+/**
+ * 直近の視聴者活動量を線で見る。丸は Request が出た瞬間。
+ * 波の高いところに寄っているが固定ではない、を目で確かめるためのもの。
+ */
+function NoiseGraph({ trace, offers }: { trace: number[]; offers: number[] }) {
+  if (trace.length < 2) return null;
+  const w = 200;
+  const h = 40;
+  const step = w / Math.max(1, trace.length - 1);
+  const pts = trace.map((v, i) => `${(i * step).toFixed(1)},${(h - v * h).toFixed(1)}`).join(' ');
+  return (
+    <svg className="noise-graph" viewBox={`0 0 ${w} ${h}`} width={w} height={h}>
+      <line x1="0" y1={h / 2} x2={w} y2={h / 2} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+      <polyline points={pts} fill="none" stroke="rgba(255,214,120,0.9)" strokeWidth="1.5" />
+      {offers.map((i) => (
+        <circle
+          key={i}
+          cx={(i * step).toFixed(1)}
+          cy={(h - (trace[i] ?? 0) * h).toFixed(1)}
+          r="2.5"
+          fill="rgba(255,120,120,0.95)"
+        />
+      ))}
+    </svg>
+  );
+}
+
 export function DebugPanel() {
   const s = useHud();
   if (!s.debug) return null;
@@ -102,6 +129,24 @@ export function DebugPanel() {
             />
           )}
           <Row k="Request" v={s.f1Debug.request} />
+          {s.viewerNoise && (
+            <>
+              <Row k="Run Seed" v={String(s.viewerNoise.seed)} />
+              <Row
+                k="Viewer Activity"
+                v={`${s.viewerNoise.activity.toFixed(2)} ${s.viewerNoise.phase}  (long ${s.viewerNoise.long.toFixed(2)} / short ${s.viewerNoise.short.toFixed(2)})`}
+              />
+              <Row
+                k="Pulse 内訳"
+                v={`natural ${s.viewerNoise.natural.toFixed(2)}  impulse +${s.viewerNoise.impulse.toFixed(2)}  debt +${s.viewerNoise.debt.toFixed(2)}  fatigue -${s.viewerNoise.fatigue.toFixed(2)}`}
+              />
+              <Row
+                k="Reaction / Request"
+                v={`${s.viewerNoise.reaction.toFixed(2)} / ${s.viewerNoise.request.toFixed(2)}`}
+              />
+              <NoiseGraph trace={s.viewerNoise.trace} offers={s.viewerNoise.offers} />
+            </>
+          )}
           <Row k="Request Counts" v={s.f1Debug.requestCounts} />
           <Row k="Request Candidate" v={s.f1Debug.candidate} />
           <Row k="Invalid Special Actions" v={String(s.f1Debug.invalidActions)} />

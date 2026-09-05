@@ -3,6 +3,9 @@ import { BUILD_ID } from '../core/build';
 
 export type LogEvent =
   | 'stream_started'
+  | 'viewer_noise_config'
+  | 'viewer_activity_sample'
+  | 'viewer_pulse_impulse'
   | 'anomaly_spawned'
   | 'anomaly_discovered'
   | 'point_inspected'

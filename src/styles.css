@@ -1112,3 +1112,77 @@ body,
 .target-tag.locked {
   color: rgba(120, 230, 160, 0.9);
 }
+
+
+/* 視聴者活動量の簡易グラフ（デバッグ） */
+.noise-graph {
+  display: block;
+  margin: 4px 0 6px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 2px;
+}
+
+
+/* 視聴者ノイズの調整バー（タイトル画面） */
+.tuner-toggle {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.55);
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  padding: 4px 10px;
+  border-radius: 2px;
+  cursor: pointer;
+  margin: 10px auto 0;
+  display: block;
+}
+.tuner-toggle:hover {
+  color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+.tuner {
+  margin: 12px auto 0;
+  max-width: 420px;
+  padding: 10px 14px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.3);
+  text-align: left;
+}
+.tuner-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: rgba(255, 214, 120, 0.9);
+}
+.tuner-head .tuner-toggle {
+  margin: 0;
+  padding: 0 6px;
+}
+.tuner-note {
+  margin: 6px 0 10px;
+  font-size: 10px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.4);
+}
+.tuner-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 46px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.6);
+}
+.tuner-row input[type='range'] {
+  width: 100%;
+  accent-color: rgba(255, 214, 120, 0.9);
+}
+.tuner-value {
+  text-align: right;
+  color: rgba(255, 255, 255, 0.85);
+}

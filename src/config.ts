@@ -911,6 +911,8 @@ export const CONFIG = {
       afterRequest: { min: 3, max: 8 },
       /** 発見トーストの直後 */
       afterDiscovery: 2.5,
+      /** これ以下の間隔では絶対に出さない。波が高くても破らない */
+      hardMinGap: 8,
       /** Request 提示直後、無関係な恐怖を重ねない時間 */
       decisionSpace: 3.5,
       /** 何も出さない時間の上限。これを超えたら世界の方を動かす */
@@ -1130,6 +1132,42 @@ export const CONFIG = {
   log: { sampleInterval: 0.2 },
 
   audio: { master: 0.6 },
+
+  /**
+   * ViewerActivityNoise（FLOOR 1 のみ）。
+   *
+   * 「いつ口を開きやすいか」だけに使う。何を言うかには一切使わない。
+   * まず周期は長め・効果は弱めから始めて、人間プレイで詰める。
+   */
+  viewerNoise: {
+    enabled: true,
+    /** 大きな盛り上がり。まず長めにする */
+    longScale: 45,
+    /** その中の小さな揺れ */
+    shortScale: 11,
+    longWeight: 0.75,
+    shortWeight: 0.25,
+    /** コメントが先に温まってから Request が来るように、コメント側を先読みする */
+    reactionOffset: 4,
+    requestOffset: 0,
+    /** 状況Requestとコメントは波の影響を強く受ける */
+    situationCadence: [0.6, 1.4] as [number, number],
+    /** Core は文脈で決まる。波はほとんど効かせない */
+    coreCadence: [0.95, 1.05] as [number, number],
+
+    /** 出来事の余韻。急に上がってゆっくり消える */
+    impulseDecay: 9,
+    impulseCap: 0.6,
+    /** 盛り上がり疲れ。ずっと騒がしいのを防ぐ */
+    fatigueFrom: 0.7,
+    fatigueGain: 0.05,
+    fatigueRecovery: 0.035,
+    fatigueCap: 0.3,
+    /** 静かすぎ防止。8秒を超えたぶんだけ床が上がる */
+    silenceFrom: 8,
+    silenceSpan: 17,
+    silenceCap: 0.25,
+  },
 
   render: {
     fogDensity: 0.038,

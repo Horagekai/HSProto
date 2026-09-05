@@ -450,11 +450,21 @@ export class ChatSystem {
     for (let i = 0; i < n; i++) this.push(pick(this.lines(category)), true);
   }
 
-  update(dt: number, category: ChatCategory, viewers: number, engagement: number) {
+  /**
+   * @param activityCadence 視聴者の波。大きいほどコメントが密になる。
+   *   FLOOR 1 以外は 1 が渡るので、他モードの挙動は変わらない。
+   */
+  update(
+    dt: number,
+    category: ChatCategory,
+    viewers: number,
+    engagement: number,
+    activityCadence = 1,
+  ) {
     // Viewer数とEngagementが高いほどコメントが速く流れる
     const heat = 1 + Math.log10(Math.max(1, viewers / 100)) * 1.6 + (engagement - 1) * 0.45;
     const interval = clamp(
-      CONFIG.chat.base / heat,
+      CONFIG.chat.base / heat / Math.max(0.1, activityCadence),
       CONFIG.chat.minInterval,
       CONFIG.chat.maxInterval,
     );

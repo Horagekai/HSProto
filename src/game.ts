@@ -25,6 +25,7 @@ import { ChatSystem, type ChatCategory } from './systems/chat';
 import { AudioSystem } from './systems/audio';
 import { Logger, type LogRow } from './systems/logger';
 import { BUILD_ID } from './core/build';
+import { ViewerActivityNoise } from './systems/viewerActivity';
 import { Director } from './systems/director';
 import { HeySystem, type HeyResponse } from './systems/hey';
 import { NoveltySystem, riskMultiplier } from './systems/novelty';
@@ -188,7 +189,22 @@ export class Game {
 
   /** HS FLOOR 1 MODE の本体。他モードでは触らない */
   private f1: Floor1Mode | null = null;
+  /**
+   * 視聴者群衆の活動量。**FLOOR 1 でのみ使う。**
+   * 「いつ口を開きやすいか」だけを決め、何を言うかには関与しない。
+   */
+  viewerNoise = new ViewerActivityNoise(1);
+  /** この Run の種。ノイズはここからしか作らない（壁時計を種にしない） */
+  runSeed = 1;
   private f1Level: Floor1Level | null = null;
+  private noiseLogTimer = 0;
+  private lastOfferCount = 0;
+  /** 直近のノイズ。デバッグの簡易グラフ用 */
+  noiseTrace: number[] = [];
+  /** グラフ上の Request マーカー（trace のインデックス） */
+  offerMarks: number[] = [];
+  /** タイトル画面で調整したノイズ設定 */
+  noiseOverride: Partial<ViewerActivityNoise['cfg']> | null = null;
   /** 直前フレームの位置と向き（DON'T MOVE / TURN AROUND の判定用） */
   private lastPos = { x: 0, z: 0 };
   private turnAnchor = 0;
@@ -479,6 +495,22 @@ export class Game {
       log: (event: string, detail: string) =>
         this.logger.event(event as Parameters<Logger['event']>[0], this.logRow(), detail),
       distanceToEntrance: () => this.distanceToEntrance(),
+      viewerActivity: () => ({
+        request: this.viewerNoise.requestActivity,
+        cadence: (core: boolean) => this.viewerNoise.cadenceFor(core),
+      }),
+      viewerNoteOutput: () => {
+        if (this.floor1) this.viewerNoise.noteOutput();
+      },
+      viewerImpulse: (source: string) => {
+        if (!this.floor1) return;
+        const before = this.viewerNoise.eventImpulse;
+        this.viewerNoise.impulse(source);
+        this.logEvent(
+          'viewer_pulse_impulse',
+          `source=${source} before=${before.toFixed(2)} after=${this.viewerNoise.eventImpulse.toFixed(2)}`,
+        );
+      },
     };
   }
 
@@ -527,6 +559,15 @@ export class Game {
   }
 
   private resetRun() {
+    // Run ごとに種を決める。同じ種なら同じ波になる
+    this.runSeed = (Math.random() * 0xffffffff) >>> 0;
+    this.viewerNoise = new ViewerActivityNoise(this.runSeed, this.noiseOverride ?? undefined);
+    this.logEvent(
+      'viewer_noise_config',
+      `run_seed=${this.runSeed} long=${this.viewerNoise.cfg.longScale} short=${this.viewerNoise.cfg.shortScale} ` +
+        `weights=${this.viewerNoise.cfg.longWeight}/${this.viewerNoise.cfg.shortWeight} ` +
+        `offset=${this.viewerNoise.cfg.reactionOffset}/${this.viewerNoise.cfg.requestOffset} enabled=${this.viewerNoise.cfg.enabled}`,
+    );
     this.applyMode();
     this.player.reset();
     this.monster.reset(this.ghost ? CONFIG.oneGhost.monsterSpawn : CONFIG.monster.spawn);
@@ -1432,7 +1473,40 @@ export class Game {
       this.requests.update(dt, this.buildRequestContext(selfieMonsterInFrame, selfieMonsterBehind));
     }
 
-    this.chat.update(dt, this.chatCategory(), this.stream.viewers, this.stream.engagement);
+    // FLOOR 1 だけ、視聴者の波でコメントの密度を揺らす
+    if (this.floor1) {
+      this.viewerNoise.update(dt);
+      this.noiseLogTimer -= dt;
+      if (this.noiseLogTimer <= 0) {
+        this.noiseLogTimer = 1;
+        const n = this.viewerNoise.debug();
+        this.logEvent(
+          'viewer_activity_sample',
+          `run_seed=${n.seed} time=${this.elapsed.toFixed(1)} long_noise=${n.long} short_noise=${n.short} ` +
+            `natural_activity=${n.natural} event_impulse=${n.impulse} fatigue=${n.fatigue} silence_debt=${n.debt} ` +
+            `effective_activity=${n.activity} reaction_activity=${n.reaction} request_activity=${n.request} phase=${n.phase}`,
+        );
+      }
+      this.noiseTrace.push(this.viewerNoise.activity);
+      if (this.f1 && this.f1.offerTimes.length > this.lastOfferCount) {
+        this.lastOfferCount = this.f1.offerTimes.length;
+        this.offerMarks.push(this.noiseTrace.length - 1);
+      }
+      if (this.noiseTrace.length > 240) {
+        this.noiseTrace.shift();
+        this.offerMarks = this.offerMarks.map((i) => i - 1).filter((i) => i >= 0);
+      }
+    }
+    const before = this.chat.messages.length;
+    this.chat.update(
+      dt,
+      this.chatCategory(),
+      this.stream.viewers,
+      this.stream.engagement,
+      this.floor1 ? this.viewerNoise.commentCadence : 1,
+    );
+    // コメントが出た / リクエストが出た＝視聴者が口を開いた。無音の借金を返す
+    if (this.floor1 && this.chat.messages.length !== before) this.viewerNoise.noteOutput();
     this.audio.update(dt, this.monster.danger, this.distance, clamp01(this.monster.stateRank() / 4));
 
     if (this.monster.chasing && this.distance <= CONFIG.monster.killDistance) this.die();
@@ -2301,6 +2375,9 @@ export class Game {
       playerPos: { x: this.player.position.x, z: this.player.position.z },
       dismissHold: this.dismissHold / CONFIG.request.dismiss.holdTime,
       f1Debug: this.floor1 && this.f1 ? this.f1.debug() : null,
+      viewerNoise: this.floor1
+        ? { ...this.viewerNoise.debug(), trace: [...this.noiseTrace], offers: [...this.offerMarks] }
+        : null,
       stateKey: this.stream.breakdown.stateKey,
       repeatCount: this.repeatCountOfCurrent(),
       novelty: this.stream.breakdown.novelty,
@@ -2414,6 +2491,15 @@ export class Game {
     return {
       game: this,
       buildId: BUILD_ID,
+      viewerNoise: () => this.viewerNoise,
+      runSeed: () => this.runSeed,
+      setNoise: (o: Partial<ViewerActivityNoise['cfg']> | null) => {
+        this.noiseOverride = o;
+      },
+      setSeed: (seed: number) => {
+        this.runSeed = seed >>> 0;
+        this.viewerNoise = new ViewerActivityNoise(this.runSeed, this.noiseOverride ?? undefined);
+      },
       player: this.player,
       monster: this.monster,
       stream: this.stream,

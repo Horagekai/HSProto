@@ -71,6 +71,12 @@ export interface Floor1Deps {
   markDecision: () => void;
   log: (event: string, detail: string) => void;
   distanceToEntrance: () => number;
+  /** 視聴者の波。いつ口を開きやすいかにだけ使う */
+  viewerActivity: () => { request: number; cadence: (core: boolean) => number };
+  /** 出来事で視聴者が一時的に喋りやすくなる。何を言うかには関与しない */
+  viewerImpulse: (source: string) => void;
+  /** 視聴者が口を開いた。無音の借金を返す */
+  viewerNoteOutput: () => void;
 }
 
 export type RequestState =
@@ -236,6 +242,8 @@ export class Floor1Mode {
   private quiet = 0;
   private elapsed = 0;
   private sinceEvent = 0;
+  /** 直前の提示からの経過。Hard Minimum Gap に使う */
+  private sinceOffer = 999;
 
   ghost: GhostState = 'seated';
   private ghostStandTimer = 0;
@@ -370,6 +378,7 @@ export class Floor1Mode {
     this.quiet = randRange(4, 8);
     this.elapsed = 0;
     this.sinceEvent = 0;
+    this.sinceOffer = 999;
     this.ghost = 'seated';
     this.ghostStandTimer = 0;
     this.ghostRelocateCd = 0;
@@ -764,6 +773,7 @@ export class Floor1Mode {
 
   private drinkBath() {
     if (!this.requireRequestFor('bath', 'bath_sip')) return false;
+    this.d.viewerImpulse('bath_sip');
     this.bathSips += 1;
     this.d.sfxWhisper(1);
     this.d.toast('YOU DRANK IT', 1.8);
@@ -893,6 +903,7 @@ export class Floor1Mode {
     this.d.log('hold_released', `request=${a.def.id} total_duration=${a.hold.toFixed(1)} highest_tier=${a.tier} reason=${reason}`);
     if (a.def.object === 'altar' && a.hold >= 5) {
       this.memory.remember('altar_overplayed');
+      this.d.viewerImpulse('altar_overplayed');
       this.horror.addIntent('altar_overplayed');
     }
     if (a.def.object === 'phone' && a.hold >= 5) {
@@ -1175,6 +1186,7 @@ export class Floor1Mode {
         break;
       // ---- Safe Suspense Peak。強い演出だが危険は増やさない ----
       case 'PortraitCrash':
+        this.d.viewerImpulse('portrait_crash');
         // 見ている目の前で落ちる（§56）。ガラスが割れる
         this.objects.setState('portraits', 'fallen');
         this.d.dropPortrait();
@@ -1238,7 +1250,11 @@ export class Floor1Mode {
     // 背後で起きたことは TURN AROUND 系のお膳立てになる
     if (def.tags?.includes('behind') || def.family === 'GHOST_SPATIAL') this.markBehindEvent();
     if (def.family === 'PHONE') this.markPhoneEvent();
-    if (def.intensity !== 'subtle') this.horrorAt = this.elapsed;
+    if (def.intensity !== 'subtle') {
+      this.horrorAt = this.elapsed;
+      // 視聴者は配信を見ているので反応する。ただし HorrorDirector 側は波を見ない
+      this.d.viewerImpulse('horror_event');
+    }
     const tags = def.requiredMemories?.length ? `memory=${def.requiredMemories[0]}` : '';
     this.d.chat(def.intensity === 'subtle' ? 'idle' : 'anomaly', def.intensity === 'subtle' ? 1 : 2);
     this.markEvent('anomaly');
@@ -1401,8 +1417,15 @@ export class Floor1Mode {
       return;
     }
 
-    this.quiet -= dt;
+    // --- 視聴者の波（§34-40）---
+    // 「評価してよい窓か」だけを揺らす。何を出すかには一切関与しない。
+    // Core Opportunity があるときは、波の影響をほとんど受けない。
+    const core = this.cores.some((c) => c.state === 'active' || c.state === 'suspended');
+    const cadence = this.d.viewerActivity().cadence(core);
+    this.quiet -= dt * cadence;
     if (this.quiet > 0) return;
+    // Hard Minimum Gap。波がどれだけ高くてもここは破らない（§10-11）
+    if (this.sinceOffer < pace.hardMinGap) return;
     if (this.sinceEvent < pace.afterEvent) return;
 
     const ctx = this.context();
@@ -1828,6 +1851,8 @@ export class Floor1Mode {
     else this.lastSituationRequestAt = this.elapsed;
     this.funnel.offered[def.object ? 'object' : 'situation'] += 1;
     this.offerTimes.push(this.elapsed);
+    this.sinceOffer = 0;
+    this.d.viewerNoteOutput();
     if (def.id === 'phone_answer') this.opportunities.phonePickupOffered += 1;
     if (def.id === 'altar_beat') this.opportunities.altarBeatOffered += 1;
     if (def.object === 'bath') this.opportunities.bathOffered += 1;
@@ -1843,7 +1868,8 @@ export class Floor1Mode {
     this.d.log('request_selected', `id=${def.id} type=${def.type} reward=${def.reward} tier=${def.riskTier}`);
     this.d.log(
       'request_offered',
-      `${def.id}:${def.reward} type=${def.type} object=${def.object ?? '-'} category=${def.object ? 'object' : 'situation'}`,
+      `${def.id}:${def.reward} type=${def.type} object=${def.object ?? '-'} category=${def.object ? 'object' : 'situation'} ` +
+        `viewer_activity_at_offer=${this.d.viewerActivity().request.toFixed(2)} cadence_modifier=${this.d.viewerActivity().cadence(!!def.object).toFixed(2)}`,
     );
     if (def.lastTemptation) this.lastTemptationDone = true;
   }
@@ -1894,6 +1920,7 @@ export class Floor1Mode {
     if (a.def.object) this.touchedObject(a.def.object);
     // 自分から危険を選んだ。世界はこれを見てから返事を決める
     this.lastRiskTier = a.def.riskTier;
+    if (a.def.riskTier >= 3) this.d.viewerImpulse('risky_request');
     this.horror.markGreed(a.def.riskTier);
     if (a.def.lastTemptation) {
       this.finalTaken = true;
@@ -1990,6 +2017,7 @@ export class Floor1Mode {
           done = a.held >= 1.2;
           if (done) {
             this.ghostSelfies += 1;
+            this.d.viewerImpulse('ghost_selfie');
             this.memory.remember('ghost_selfie_taken');
             if (def.id === 'ghost_selfie_close') {
               this.memory.remember('ghost_close_selfie');
@@ -2135,6 +2163,7 @@ export class Floor1Mode {
   update(dt: number, input: { holdingE: boolean; moved: boolean; turned: number }) {
     this.elapsed += dt;
     this.sinceEvent += dt;
+    this.sinceOffer += dt;
     this.sinceObject += dt;
     this.memory.update(dt);
     this.updateDiscovery(dt);
@@ -2244,6 +2273,7 @@ export class Floor1Mode {
     this.phoneTimer = randRange(45, 80);
     // 鳴り続けはしない。鳴っている間だけが機会（§34, §82）
     this.phoneRingLeft = randRange(CONFIG.floor1.phoneRing.min, CONFIG.floor1.phoneRing.max);
+    this.d.viewerImpulse('phone_ring');
     this.objects.setState('phone', 'ringing');
     this.markPhoneEvent();
     this.d.sfxPhone(this.objDistance('phone'));

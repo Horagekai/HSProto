@@ -1,4 +1,6 @@
 import type { GameMode } from '../config';
+import { useState } from 'react';
+import { CONFIG } from '../config';
 import { useHud } from './useHud';
 
 interface Props {
@@ -53,6 +55,91 @@ const MODES: Array<{
   },
 ];
 
+/**
+ * 視聴者ノイズの調整バー（FLOOR 1 用）。
+ *
+ * 理想の値を決め打ちせず、実験できるようにしておく。
+ * 変更は次の Run から効く。
+ */
+function NoiseTuner() {
+  const [open, setOpen] = useState(false);
+  const [cfg, setCfg] = useState(() => ({ ...CONFIG.viewerNoise }));
+
+  const apply = (next: typeof cfg) => {
+    setCfg(next);
+    const g = (window as unknown as { __HS?: { dev: { setNoise: (o: unknown) => void } } }).__HS;
+    g?.dev.setNoise(next);
+  };
+
+  const bar = (
+    label: string,
+    key: 'longScale' | 'shortScale' | 'longWeight' | 'reactionOffset',
+    min: number,
+    max: number,
+    step: number,
+    unit = '',
+  ) => (
+    <label className="tuner-row" key={key}>
+      <span className="tuner-label">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={cfg[key]}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          const next = { ...cfg, [key]: v };
+          // 長短の重みは合計1に保つ
+          if (key === 'longWeight') next.shortWeight = Math.round((1 - v) * 100) / 100;
+          apply(next);
+        }}
+      />
+      <span className="tuner-value">
+        {cfg[key]}
+        {unit}
+      </span>
+    </label>
+  );
+
+  if (!open) {
+    return (
+      <button type="button" className="tuner-toggle" onClick={() => setOpen(true)}>
+        VIEWER NOISE ▸
+      </button>
+    );
+  }
+
+  return (
+    <div className="tuner">
+      <div className="tuner-head">
+        VIEWER ACTIVITY NOISE
+        <button type="button" className="tuner-toggle" onClick={() => setOpen(false)}>
+          ▾
+        </button>
+      </div>
+      <p className="tuner-note">
+        視聴者が「いつ口を開きやすいか」だけを揺らします。何を言うかは変わりません。
+        <br />
+        変更は次の RUN から反映されます。
+      </p>
+      <label className="tuner-row">
+        <span className="tuner-label">ON / OFF</span>
+        <input
+          type="checkbox"
+          checked={cfg.enabled}
+          onChange={(e) => apply({ ...cfg, enabled: e.target.checked })}
+        />
+        <span className="tuner-value">{cfg.enabled ? 'ON' : 'OFF'}</span>
+      </label>
+      {bar('長い波', 'longScale', 20, 90, 5, 's')}
+      {bar('短い波', 'shortScale', 5, 25, 1, 's')}
+      {bar('長い波の比重', 'longWeight', 0.4, 1, 0.05)}
+      {bar('コメント先行', 'reactionOffset', 0, 10, 1, 's')}
+    </div>
+  );
+}
+
 export function StartOverlay({ onStart }: Props) {
   const s = useHud();
   // ポインタロックが外れてもゲームは止めないので、一時停止オーバーレイは出さない
@@ -82,6 +169,8 @@ export function StartOverlay({ onStart }: Props) {
             </button>
           ))}
         </div>
+
+        <NoiseTuner />
 
         <ul className="controls">
           {CONTROLS.map(([k, v]) => (
