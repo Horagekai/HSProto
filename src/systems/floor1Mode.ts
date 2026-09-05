@@ -899,7 +899,21 @@ export class Floor1Mode {
       if (a.hold >= CONFIG.floor1.hold.maxSeconds) this.releaseHold('max');
       return;
     }
-    if (a.hold > 0) this.releaseHold('released');
+    // 指を離しただけでは終わらせない。
+    // 実プレイで、Inspect の [E] を押した流れで 0.1秒だけ握って離した結果、
+    // 26秒あるはずの PLAY A BEAT がその場で消えていた。
+    // 段を1つも取っていないなら、まだ「やらなかった」ではなく「まだやっていない」。
+    if (a.hold > 0) {
+      if (a.tier > 0) this.releaseHold('released');
+      else if (a.hold >= CONFIG.floor1.hold.minCommit) this.releaseHold('released');
+      else {
+        // 触っただけ。握り直せるように戻す
+        this.d.log('hold_released', `request=${a.def.id} total_duration=${a.hold.toFixed(1)} reason=tap`);
+        a.hold = 0;
+        a.progress = 0;
+        a.engaged = false;
+      }
+    }
   }
 
   private releaseHold(reason: string) {
@@ -2100,6 +2114,10 @@ export class Floor1Mode {
           break;
         }
         case 'sit_dont_turn':
+          if (this.elapsed - a.offeredAt < CONFIG.floor1.constraintGrace) {
+            ok = false;
+            break;
+          }
           if (Math.abs(opts.turned) > 2.0) {
             this.d.toast('YOU LOOKED', 1.4);
             this.endRequest('ignored');
@@ -2108,6 +2126,12 @@ export class Floor1Mode {
           ok = true;
           break;
         case 'sit_dont_move':
+          // 提示直後は止まる時間を与える。歩いている最中に言われて
+          // 同じフレームで失敗するのは理不尽（実プレイで 0.1秒で失格していた）
+          if (this.elapsed - a.offeredAt < CONFIG.floor1.constraintGrace) {
+            ok = false;
+            break;
+          }
           if (opts.moved) {
             this.d.toast('YOU MOVED', 1.4);
             this.endRequest('ignored');
@@ -2116,6 +2140,10 @@ export class Floor1Mode {
           ok = true;
           break;
         case 'sit_stay_here':
+          if (this.elapsed - a.offeredAt < CONFIG.floor1.constraintGrace) {
+            ok = false;
+            break;
+          }
           if (this.room() !== a.startRoom) {
             this.d.toast('YOU LEFT', 1.4);
             this.endRequest('ignored');

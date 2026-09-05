@@ -754,6 +754,11 @@ export const CONFIG = {
 
     /** [E] で触れる距離 */
     interactRange: 3.0,
+    /**
+     * 制約系Requestは、提示からこの秒数だけ猶予を置いてから判定を始める。
+     * 歩いている最中に「動くな」と言われて同じフレームで失格するのは理不尽。
+     */
+    constraintGrace: 1.2,
     /** KEEP IN FRAME を出すのに必要な画面中央度。端の映り込みでは出さない */
     frameRequestCenter: 0.2,
     /** 仏間へ気づかせるコメントを出す確率。毎回は出さない */
@@ -879,6 +884,8 @@ export const CONFIG = {
      */
     hold: {
       /** 押し続けられる上限 */
+      /** これ未満で指を離したのは「触っただけ」。Request は終わらせない */
+      minCommit: 0.6,
       maxSeconds: 16,
       /** 段を超えた瞬間のViewer反応 */
       viewerSpike: 1.12,
