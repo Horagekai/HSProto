@@ -24,6 +24,7 @@ import { DEFS, isConstraint, RequestSystem, type ActiveRequest } from './systems
 import { ChatSystem, type ChatCategory } from './systems/chat';
 import { AudioSystem } from './systems/audio';
 import { Logger, type LogRow } from './systems/logger';
+import { BUILD_ID } from './core/build';
 import { Director } from './systems/director';
 import { HeySystem, type HeyResponse } from './systems/hey';
 import { NoveltySystem, riskMultiplier } from './systems/novelty';
@@ -2381,6 +2382,7 @@ export class Game {
   get dev() {
     return {
       game: this,
+      buildId: BUILD_ID,
       player: this.player,
       monster: this.monster,
       stream: this.stream,

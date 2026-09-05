@@ -657,8 +657,19 @@ export const CONFIG = {
     /** 印象に残る山。Haunted は山の質を決めるが、山の有無は決めない */
     peak: {
       /** この秒数を過ぎると PeakNeed が上がり始め、後ろで 1.0 になる */
-      /** これより前に山は出さない */
-      notBefore: 55,
+      /**
+       * 山を出してよい状況かどうか。固定秒数では待たせない。
+       * 時間・探索の進み具合・すでに起きた出来事の数から開く。
+       */
+      opportunity: {
+        /** これだけは無条件に待つ。家に入った直後に山は来ない */
+        hardFloor: 25,
+        timeFrom: 20,
+        timeSpan: 70,
+        discoveries: 4,
+        events: 6,
+        threshold: 0.34,
+      },
       window: [45, 110] as [number, number],
       needWeight: 34,
       /** Run 序盤に山を出さない。ここを過ぎても一度も無ければ強く押す */
@@ -668,6 +679,11 @@ export const CONFIG = {
     },
     ambientFadePerPoint: 0.5,
     ambientFadeMax: 13,
+    /**
+     * 1Run で一度も出ていないイベントへの下駄。
+     * 個別 baseWeight を触らずに、埋もれたイベントを拾えるようにする。
+     */
+    unusedBonus: 10,
     /** Pressure が高いときだけ最低スコアを上げる。全体一律では上げない */
     minScoreHigh: 55,
     minScoreSaturated: 72,

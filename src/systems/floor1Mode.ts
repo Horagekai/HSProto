@@ -1361,6 +1361,7 @@ export class Floor1Mode {
       activeRequestId: this.active?.def.id ?? null,
       activeRequestType: this.active?.def.type ?? null,
       lastRiskTier: this.lastRiskTier,
+      discoveries: this.discoveries,
       goalReached: this.goal,
       returning: this.returningTime > 1.5 && this.d.distanceToEntrance() < 14,
       finalTemptationTaken: this.finalTaken,

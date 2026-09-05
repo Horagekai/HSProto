@@ -1,4 +1,5 @@
 import { CONFIG, type GameMode, type MonsterBehavior, type MonsterState } from '../config';
+import { BUILD_ID } from '../core/build';
 
 export type LogEvent =
   | 'stream_started'
@@ -334,7 +335,8 @@ export class Logger {
 
   toJSON() {
     return JSON.stringify(
-      { version: 3, mode: this.mode, summary: this.summary(), rows: this.rows },
+      // build を必ず残す。ログを見返したとき、どのビルドの挙動なのかが分かるようにする
+      { version: 3, build: BUILD_ID, mode: this.mode, summary: this.summary(), rows: this.rows },
       null,
       2,
     );

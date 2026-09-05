@@ -1,4 +1,5 @@
 import type { MonsterState } from '../config';
+import { BUILD_ID } from '../core/build';
 import { useHud } from './useHud';
 
 /**
@@ -19,7 +20,7 @@ export function DebugPanel() {
   if (!s.debug) return null;
   return (
     <div className="debug">
-      <div className="debug-head">DEBUG [P]</div>
+      <div className="debug-head">DEBUG [P] &middot; build {BUILD_ID}</div>
       <Row k="Mode" v={s.mode === 'one_ghost' ? 'ONE GHOST' : 'STANDARD'} />
       <Row
         k="Monster State"
@@ -69,8 +70,8 @@ export function DebugPanel() {
               .join(' / ') || '-'}
           />
           <Row
-            k="Peak Need"
-            v={`${s.f1Debug.horror.peakNeed}  [${s.f1Debug.horror.peaks.join(', ') || '山なし'}]`}
+            k="Peak Need / Opportunity"
+            v={`${s.f1Debug.horror.peakNeed} / ${s.f1Debug.horror.peakOpportunity}  [${s.f1Debug.horror.peaks.join(', ') || '山なし'}]`}
           />
           <Row k="Consequence Intents" v={s.f1Debug.horror.intents.join(' / ') || '-'} />
           <Row k="Pacing Need" v={s.f1Debug.horror.pacing.toFixed(2)} />

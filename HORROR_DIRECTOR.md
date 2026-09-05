@@ -1,4 +1,4 @@
-# Horror Director v1.2
+# Horror Director v1.3
 
 [`src/systems/horrorDirector.ts`](src/systems/horrorDirector.ts) /
 [`src/systems/horrorEvents.ts`](src/systems/horrorEvents.ts)
@@ -552,3 +552,147 @@ curious  216.5s created source=bath_sip_2 preferred=15-45 latest=70
 greedy   356.6s created source=phone_listened_long preferred=15-50 latest=80
          376.8s resolved source=phone_listened_long event=DistantPhone latency=20.3s
 ```
+
+---
+
+# v1.3 — 観測できるようにする
+
+コアモデルは触っていない。**Director を賢くするより、Director の挙動を正しく観測できるようにする**回。
+
+## 27. Behavior-targeted Playtest Bots
+
+従来のボットは「提示されたリクエストに反応する」だけだったので、
+風呂の2口目や至近距離セルフィーまで自然には到達しなかった
+（v1.2 の5Runで `bath_sip_2` 到達1回、セルフィー0回）。
+つまり Consequence Intent の実効果を実プレイで測れていなかった。
+
+v1.3 では **狙った Greed を実際の操作経路で踏みに行く** 4本を足した。
+
+```js
+const bot = await import('/src/dev/floor1Bot.ts');
+console.table(bot.runBehaviorBots());
+```
+
+| Bot | riskCeiling | HOLD | 狙う Greed |
+| --- | --- | --- | --- |
+| safe | 1 | 0秒 | なし |
+| moderate | 3 | 7秒 | phone |
+| greedy_targeted | 5 | 7秒 | bath / altar / phone |
+| max_greed | 5 | 8秒 | selfie / bath / altar / phone（降りない） |
+
+仕組みは「対象の前に張り付いて、目当てのリクエストが出るまで待つ」。
+
+```text
+CAMP_LIMIT 55秒   何も出なければ順路へ戻る
+GOAL_LIMIT 110秒  ひとつの Greed を追いかける上限。出なければ諦めて次へ
+```
+
+**追われている間は逃げる。** 逃げずに死ぬと Run が2分で終わり、その先の Greed を観測できない
+（実際、最初の実装では greedy が 2.2 分で死んで agenda の半分に届かなかった）。
+
+12 Run の到達率:
+
+```text
+bath_sip_2           4/12
+altar_overplayed     4/12
+phone_listened_long  7/12
+ghost_close_selfie   1/12
+Consequence Intent   14/17 resolved (82%)
+```
+
+v1.2 は5Runで `bath_sip_2` 1回・セルフィー0回だった。
+
+## 28. Dynamic Peak Opportunity
+
+固定の `notBefore: 55` を廃止。5Run とも1つ目の山が 55〜65秒に来て順番が読めていた。
+
+```text
+ready = 時間 x 0.45 + 探索の進み具合 x 0.35 + すでに起きた出来事の数 x 0.2
+        （時間は 20秒から 90秒で 1.0 / 探索は4箇所 / 出来事は6件）
+
+ready < 0.34            → 山を出さない
+Pressure が SATURATED   → 山を出さない
+elapsed < 25秒          → 山を出さない（これだけは無条件）
+```
+
+早く家を回った人には早く来る。12 Run の初回の山:
+
+```text
+v1.2  55s 56s 59.6s 60.3s 65.1s        （ほぼ固定）
+v1.3  33s 39s 41s 42s 52s 63s 63s 64s 65s 70s 77s 79s
+```
+
+`peakOpportunity` は Gate だけでなく PeakNeed のスコアにも掛かる
+（開いたばかりのときは控えめ、開ききってから強く押す）。
+
+## 29. Underused Event Bonus
+
+`WholeHouseLightDrop` は v1.2 の5Runで0回だった。
+個別の `baseWeight` を上げ下げする泥沼を避けたいので、Run の中で自己調整させる。
+
+```text
+その Run でまだ一度も出ていないイベント → +10
+```
+
+12 Run での使用回数:
+
+```text
+WholeHouseLightDrop  0回 → 4回
+LightCordSway              4回
+TVStaticTick               4回
+ObjectTinyShift            3回
+SofaEmpty                  1回
+```
+
+12 Run 通して一度も出なかったのは 4種。すべてスコアではなく**前提条件**で落ちている。
+
+```text
+FridgeHum        requiredObjectState fridge|bugs
+PortraitChanged  requiredMemories portrait_restored
+KitchenNoise     requiredMemories fridge_held_long
+GhostStand       requiredGhostState ['aware'] のみ（窓が狭い）
+```
+
+## 30. Runtime Build Verification
+
+v1.2 の実装中、HMR が古いモジュールを配っていたせいで
+**「ソースは正しいのにテストが 0% を返す」** を長時間追いかけた。
+異常な結果を見たら、まず実行中のコードが最新かを疑えるようにする。
+
+```text
+vite.config.ts  define: { __BUILD_ID__: "<git短縮SHA>-<ビルド時刻>" }
+[P] パネル      DEBUG [P] · build 894a791-26090501510
+game.dev        buildId
+ログJSON        { version: 3, build: "...", mode, summary, rows }
+```
+
+`node_modules/.vite` を消してサーバを再起動すると直る、という手順もここに紐づく。
+
+## 31. `[P]` パネル
+
+実プレイ中に「なぜ今これが起きた？」を追えるように、以下が並ぶ。
+
+```text
+DEBUG [P] · build 894a791-26090501510
+Tension                   42 → 58 (desired)
+Tension内訳               phase 25 / unresolvedThreat 18 / ghostAwareness 15 / residue 4
+Peak Need / Opportunity   0.62 / 0.81  [PortraitCrash(safe), HallwaySilhouetteCross(low)]
+Consequence Intents       bath_sip_2 age=28s u=0.65
+Horror Pressure           11.4 HIGH
+Last 30s                  3 events / 0 strong / 1 ghost
+Nothing / MinScore        78 / 34
+Top Candidates            …
+Rejected                  …
+```
+
+## 32. v1.3 の実測（4 Bot）
+
+| Bot | 時間 | 結果 | 完了 | 山 | Intent | 系統 | 平均間隔 | T <20/20-40/40-70/70-85/85+ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| safe | 3.5分 | 生還 | 0 | 4（危険0） | 0/0 | 10 | 12.5s | 15/50/35/0/0% |
+| moderate | 6.6分 | 生還 | 6 | 5（危険1） | 0/0 | 14 | 13.5s | 9/20/55/9/7% |
+| greedy_targeted | 6.6分 | 生還 | 9 | 6（危険2） | 3/3 | 13 | 16.1s | 9/5/21/38/27% |
+| max_greed | 6.6分 | 生還 | 11 | 5（危険1） | 0/1 | 13 | 14.9s | 9/17/39/24/11% |
+
+safe は最後まで幽霊が座ったまま（危険な山0）。
+greedy_targeted は 70+ に 65% 滞在して `FakeRush` が2回。§85 の連続的な変化になっている。

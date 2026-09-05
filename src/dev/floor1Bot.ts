@@ -21,7 +21,50 @@ export type Floor1Style =
   /** D: 途中で逃げて、また戻る */
   | 'flighty'
   /** E: かなり欲張る */
-  | 'greedy';
+  | 'greedy'
+  // --- v1.3。狙った Greed を実際の操作経路で踏みに行くボット ---
+  /** Safe: 危険なリクエストを一切受けない */
+  | 'safe'
+  /** Moderate: 電話を長く聞くところまで */
+  | 'moderate'
+  /** Greedy: 風呂の2口目・仏壇の擦りすぎ・電話 */
+  | 'greedy_targeted'
+  /** Max Greed: 上記＋至近距離セルフィー。降りない */
+  | 'max_greed';
+
+/**
+ * 狙って踏みに行く Greed。
+ *
+ * 通常のボットは「提示されたリクエストに反応する」だけなので、
+ * 風呂の2口目や至近距離セルフィーまで自然には到達しない
+ * （v1.2 の5Runでは bath_sip_2 到達1回、至近距離セルフィー0回）。
+ * ここでは対象の前に張り付いて、目当てのリクエストが出るまで待つ。
+ */
+interface GreedTarget {
+  /** 目当てのリクエスト。前提となるリクエストも順に並べる */
+  chain: string[];
+  /** 張り付く場所 */
+  spot: string;
+  /** HOLD 系ならこの秒数まで押す */
+  hold?: number;
+}
+
+const GREED_AGENDA: Record<string, GreedTarget[]> = {
+  safe: [],
+  moderate: [{ chain: ['phone_answer', 'phone_listen'], spot: 'phone', hold: 7 }],
+  greedy_targeted: [
+    { chain: ['bath_sip', 'bath_sip2'], spot: 'bath' },
+    { chain: ['altar_beat'], spot: 'altar', hold: 7 },
+    { chain: ['phone_answer', 'phone_listen'], spot: 'phone', hold: 7 },
+  ],
+  max_greed: [
+    // セルフィーを先に置く。幽霊が stalking まで上がると ghost_selfie 自体が出なくなる
+    { chain: ['ghost_selfie', 'ghost_selfie_close'], spot: 'ghost' },
+    { chain: ['bath_sip', 'bath_sip2'], spot: 'bath' },
+    { chain: ['altar_beat'], spot: 'altar', hold: 8 },
+    { chain: ['phone_answer', 'phone_listen'], spot: 'phone', hold: 8 },
+  ],
+};
 
 export interface Floor1Run {
   style: Floor1Style;
@@ -49,6 +92,10 @@ export interface Floor1Run {
 }
 
 const DT = 1 / 60;
+/** 目当てのリクエストが出ないまま張り付き続けない。これを超えたら順路へ戻る */
+const CAMP_LIMIT = 55;
+/** ひとつの Greed を追いかける時間の上限。出なければ諦めて次へ */
+const GOAL_LIMIT = 110;
 const nav = createFloor1NavGrid();
 
 /** 見て回る順路。オブジェクトの手前に立てる位置 */
@@ -91,21 +138,32 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
   let holdBudget = 0;
   let pressCd = 0;
   let goingHome = false;
+  let fleeingLast = false;
 
   // どこまで欲張るか
   const holdTarget =
-    style === 'tourist' ? 0
+    style === 'tourist' || style === 'safe' ? 0
     : style === 'curious' ? 5.5
+    : style === 'moderate' ? 7
     : style === 'provoker' ? 9
     : style === 'flighty' ? 3
     : 14;
   const riskCeiling =
-    style === 'tourist' ? 1 : style === 'curious' ? 3 : style === 'flighty' ? 2 : 5;
+    style === 'tourist' || style === 'safe' ? 1
+    : style === 'curious' || style === 'moderate' ? 3
+    : style === 'flighty' ? 2
+    : 5;
   const leaveAt =
-    style === 'tourist' ? 200
+    style === 'tourist' || style === 'safe' ? 200
     : style === 'curious' ? 300
     : style === 'flighty' ? 150
     : seconds - 30;
+
+  // --- 狙って踏みに行く Greed ---
+  const agenda = (GREED_AGENDA[style] ?? []).map((g) => ({ ...g, step: 0, since: -1 }));
+  /** 今追いかけている目標。無ければ null */
+  const currentGoal = () => agenda.find((g) => g.step < g.chain.length) ?? null;
+  let campTimer = 0;
 
   while (t < seconds && dev.phase() === 'playing') {
     t += DT;
@@ -119,19 +177,51 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
       requestOrder.push(active.def.id);
       holdBudget = holdTarget;
     }
-    if (!active) lastRequestId = '';
+    if (!active) {
+      // 直前に受けていたのが目当てのものなら、達成したとみなして次へ進める
+      const g = currentGoal();
+      if (g && lastRequestId === g.chain[g.step]) {
+        g.step += 1;
+        campTimer = 0;
+      }
+      lastRequestId = '';
+    }
 
-    const takeIt = !!active && active.def.riskTier <= riskCeiling;
+    // ひとつの目標に張り付いたまま Run が終わらないようにする。
+    // 出ないものは諦めて、次の Greed を踏みに行く。
+    const pursuing = currentGoal();
+    if (pursuing) {
+      if (pursuing.since < 0) pursuing.since = t;
+      else if (t - pursuing.since > GOAL_LIMIT) pursuing.step = pursuing.chain.length;
+    }
+    // 狙っている Greed のリクエストなら、riskCeiling を無視して受ける
+    const goalNow = currentGoal();
+    const wanted = !!active && !!goalNow && active.def.id === goalNow.chain[goalNow.step];
+    const takeIt = !!active && !fleeingLast && (wanted || active.def.riskTier <= riskCeiling);
+    if (wanted) {
+      holdBudget = Math.max(holdBudget, goalNow!.hold ?? 0);
+      campTimer = 0;
+    }
 
     // --- 目的地 ---
+    // 欲張るプレイヤーでも、追われている間は逃げる。
+    // 逃げずに死ぬと Run が2分で終わり、その先の Greed を観測できない。
+    const fleeing =
+      (style === 'greedy_targeted' || style === 'max_greed' || style === 'moderate') &&
+      (f1.ghost === 'chasing' || dev.monster.danger >= 82);
     // flighty は途中で一度帰りかけ、また戻る
-    goingHome = style === 'flighty' ? (t > leaveAt && t < leaveAt + 45) || t > seconds - 60 : t > leaveAt;
+    goingHome =
+      fleeing ||
+      (style === 'flighty' ? (t > leaveAt && t < leaveAt + 45) || t > seconds - 60 : t > leaveAt);
     let target = { x: CONFIG.entrance.x, z: CONFIG.entrance.z };
     let lookAt: [number, number] | null = null;
     if (!goingHome) {
-      // リクエストの対象があるなら、そこへ寄る
+      // リクエストの対象があるなら、そこへ寄る。
+      // 無ければ、狙っている Greed の場所へ張り付く（提示されるまで待つ）
       const objId = takeIt ? active!.def.object : undefined;
-      const spot = objId ? ROUTE.find((r) => r.name === objId) : undefined;
+      const goal = currentGoal();
+      const wantId = objId ?? (goal && campTimer < CAMP_LIMIT ? goal.spot : undefined);
+      const spot = wantId ? ROUTE.find((r) => r.name === wantId) : undefined;
       const wp = spot ?? ROUTE[Math.min(leg, ROUTE.length - 1)];
       target = { x: wp.x, z: wp.z };
       lookAt = wp.look;
@@ -170,6 +260,7 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
       if (dist > 6) keys.keys.add('ShiftLeft');
     } else {
       dwell += DT;
+      if (currentGoal() && !active) campTimer += DT;
     }
 
     // --- リクエストへの対応 ---
@@ -197,7 +288,7 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
         // DON'T MOVE / DON'T TURN AROUND は何もしない＝守る
         if (def.id === 'sit_dont_move') keys.keys.clear();
       }
-    } else if (active && !takeIt && style !== 'greedy') {
+    } else if (active && !takeIt && style !== 'greedy' && style !== 'max_greed') {
       // 見合わなければ明確に降りる
       keys.keys.add('KeyX');
     }
@@ -214,11 +305,12 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
     }
 
     // --- 帰る ---
-    if (goingHome && dev.distanceToEntrance() <= CONFIG.entrance.range && !active) {
+    if (goingHome && !fleeing && dev.distanceToEntrance() <= CONFIG.entrance.range && !active) {
       // flighty は最初の帰宅では出ずに引き返す
       if (!(style === 'flighty' && t < seconds - 60)) dev.key('KeyE');
     }
 
+    fleeingLast = fleeing;
     dev.step(DT);
   }
 
@@ -257,6 +349,19 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
 export function runAllFloor1(game?: Game): Floor1Run[] {
   const g = game ?? (window as unknown as { __HS: Game }).__HS;
   return (['tourist', 'curious', 'provoker', 'flighty', 'greedy'] as Floor1Style[]).map((s) =>
+    runFloor1(g, s),
+  );
+}
+
+/**
+ * v1.3。狙った Greed を実際に踏みに行く4本。
+ *
+ *   const bot = await import('/src/dev/floor1Bot.ts');
+ *   console.table(bot.runBehaviorBots());
+ */
+export function runBehaviorBots(game?: Game): Floor1Run[] {
+  const g = game ?? (window as unknown as { __HS: Game }).__HS;
+  return (['safe', 'moderate', 'greedy_targeted', 'max_greed'] as Floor1Style[]).map((s) =>
     runFloor1(g, s),
   );
 }

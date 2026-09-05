@@ -199,6 +199,7 @@ export interface Snapshot {
       desired: number;
       components: Record<string, number>;
       peakNeed: number;
+      peakOpportunity: number;
       peaks: string[];
       intents: string[];
       pacing: number;

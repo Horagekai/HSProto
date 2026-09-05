@@ -49,6 +49,7 @@ function ctxOf(over: Partial<HorrorContext> = {}): HorrorContext {
     activeRequestId: null,
     activeRequestType: null,
     lastRiskTier: 0,
+    discoveries: 3,
     goalReached: false,
     returning: false,
     finalTemptationTaken: false,

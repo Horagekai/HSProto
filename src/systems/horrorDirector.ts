@@ -159,6 +159,8 @@ export interface HorrorContext {
   /** 直前に達成したリクエストの Risk Tier */
   lastRiskTier: number;
 
+  /** 何箇所見つけたか。家に慣れたかどうかの指標 */
+  discoveries: number;
   goalReached: boolean;
   returning: boolean;
   finalTemptationTaken: boolean;
@@ -760,6 +762,27 @@ export class HorrorDirector {
     return (t - a) / (b - a);
   }
 
+  /**
+   * 0..1。今この Run で「山」を出してよい状況か。
+   *
+   * 固定の notBefore で待たせると、5Run とも1つ目の山が同じ秒数に来て順番が読めた。
+   * 時間だけでなく、どれだけ家を見たか・どれだけ出来事があったかで開く。
+   */
+  peakOpportunity(ctx: HorrorContext) {
+    const cfg = CONFIG.horror.peak;
+    // どれだけ早く回っても、家に入った直後に山は来ない
+    if (this.elapsed < cfg.opportunity.hardFloor) return 0;
+    // ここから先は固定秒数では待たせない。条件は3つあり、どれか強ければ早く開く
+    const byTime = unit((this.elapsed - cfg.opportunity.timeFrom) / cfg.opportunity.timeSpan);
+    const byExplore = unit(ctx.discoveries / cfg.opportunity.discoveries);
+    const byEvents = unit(this.fired.length / cfg.opportunity.events);
+    const ready = byTime * 0.45 + byExplore * 0.35 + byEvents * 0.2;
+    if (ready < cfg.opportunity.threshold) return 0;
+    // Chase 直後や刺激過多のときは山の出しどきではない
+    if (this.pressureBand === 'SATURATED') return 0;
+    return (ready - cfg.opportunity.threshold) / (1 - cfg.opportunity.threshold);
+  }
+
   get phaseTargetTension(): [number, number] {
     return [20, 60];
   }
@@ -833,8 +856,9 @@ export class HorrorDirector {
     // 強いイベントが続かないようにする
     const rank = INTENSITY_RANK[def.intensity];
     if (rank >= 3) {
-      // 開幕すぐに山を持ってこない。まず家に慣れさせる
-      if (this.elapsed < CONFIG.horror.peak.notBefore) return 'too_early_for_peak';
+      // 開幕すぐに山を持ってこない。ただし固定秒数で待たせない。
+      // 「家に慣れたか」で判断するので、早く回った人には早く来る。
+      if (this.peakOpportunity(ctx) <= 0) return 'no_peak_opportunity';
       // 間が空いていても、強い出来事が2つ並ぶと山が山でなくなる
       if (this.lastFiredRank >= 3) return 'strong_after_strong';
       this.strongTimes = this.strongTimes.filter((t) => this.elapsed - t < CONFIG.horror.strongWindow);
@@ -909,7 +933,7 @@ export class HorrorDirector {
     // 山が長く来ていないなら、強い出来事を押し出す。
     // Haunted は「どれくらい危険な山か」を決めるだけで、山そのものの有無は決めない。
     if (rank >= 3) {
-      const b = this.peakNeed * CONFIG.horror.peak.needWeight;
+      const b = this.peakNeed * CONFIG.horror.peak.needWeight * (0.5 + 0.5 * this.peakOpportunity(ctx));
       s += b;
       if (b > 1) tags.push(`peakNeed+${b.toFixed(0)}`);
       // 一度も山が無いまま Run が進むのが最悪なので、初回だけ強く押す
@@ -1046,6 +1070,14 @@ export class HorrorDirector {
           tags.push('overload-45');
         }
       }
+    }
+
+    // 一度も出ていないものを少しだけ押す。
+    // baseWeight を個別に上げ下げして泥沼にするより、Run の中で自己調整させる。
+    if (!this.counts.get(def.id)) {
+      const b = CONFIG.horror.unusedBonus;
+      s += b;
+      tags.push(`unused+${b}`);
     }
 
     // --- 繰り返しを避ける ---
@@ -1361,6 +1393,7 @@ export class HorrorDirector {
       anticipation: Math.round(this.anticipation * 10) / 10,
       pressure: Math.round(this.pressure * 10) / 10,
       peakNeed: Math.round(this.peakNeed * 100) / 100,
+      peakOpportunity: Math.round((this.lastCtx ? this.peakOpportunity(this.lastCtx) : 0) * 100) / 100,
       intents: this.intents
         .filter((i) => !i.resolved)
         .map((i) => `${i.source} age=${(this.elapsed - i.createdAt).toFixed(0)}s u=${urgency(i, this.elapsed).toFixed(2)}`),
@@ -1456,6 +1489,10 @@ export class HorrorDirector {
       sequence: this.fired.map((f) => f.id),
     };
   }
+}
+
+function unit(v: number) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
 function clamp(v: number, lo: number, hi: number) {
