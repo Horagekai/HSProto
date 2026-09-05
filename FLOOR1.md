@@ -276,3 +276,112 @@ Run C: altar_beat → sit_dont_move → mirror_dark → sit_lights_off → ghost
 ```
 
 提示間隔は 13〜40秒。常に何かが出ている状態にはなっていない。
+
+
+---
+
+## Request Runtime v2 — Inspect と Request Action を分ける
+
+人間プレイのログで、中心ループが成立していないことが分かった。
+
+```text
+26.1s  object_interacted: bath → bath_sip_1   ただし request_active = 0
+10.9s  altar_beat が候補 → 66.1s に context_changed で破棄（55秒 Pending）
+Run全体 discoveries 9 / requests_offered 1（唯一 sit_dont_turn）
+74.6s  request_offered なのに同フレームで request_active = 0
+```
+
+### 1. 権威ある Request 状態をひとつにする
+
+`ActiveRequest` に `state / actionUnlocked / activatedAt` を持たせ、
+**UI・[E]のアンロック・HOLD・制約・完了・Dismiss・ログ・Debug HUD がすべてこれだけを見る。**
+
+```ts
+requestRuntime() → { active, id, type, reward, temptation, state, relatedObject, actionUnlocked }
+```
+
+ログ行の `request_active / request_type / request_reward` はここから作る。
+以前は FLOOR 1 でも STANDARD 側の `RequestDirector` を見ていたため、
+`request_offered` と同じフレームで `request_active=0` になっていた。
+
+同じ原因で `publish()` が毎フレーム `request: null` を書き込み、
+**Request カードが一度も表示されていなかった。**
+
+### 2. Inspect と Special Action
+
+| | 何ができるか |
+| --- | --- |
+| `[E]`（Request 無し） | 調べるだけ。発見・説明・視聴者の反応・Request の資格 |
+| `[E]`（Request の対象、解放済み） | 飲む / 鳴らす / 受話器を取る / セルフィー |
+
+```text
+bath_sip / altar_hold / phone_listen / ghost selfie は
+ActiveRequest が無ければ絶対に発生しない
+```
+
+破られたら `invalid_special_action` を記録する。実測 0 件。
+Inspect は discovery を成立させる（ここが繋がっていないと Request の資格が立たない）。
+
+### 3. 候補の寿命
+
+```text
+warmup       2.5〜6秒
+出来事に譲る 合計 5秒まで   ← 以前は毎フレーム引き直していた
+対象の近く   15秒まで粘る
+離れたら     8秒で諦める
+stale        20秒で必ず捨てる
+```
+
+Horror Event が 10秒おきに出るだけで候補が 55秒 Pending していたのはここ。
+実測の最大 Pending は 10.3秒。
+
+### 4. Object Request Need
+
+調べた対象が増えているのに Object Request が0件、という状態を不自然として扱う。
+
+```text
+need = 調べた数（発見数の半分も弱く効かせる）と、最後の Object Request からの間隔
+Object Request  +26 × need
+Situation Req   -20 × need
+```
+
+「3個調べたら必ず出す」ではない。
+
+### 5. ログ
+
+```text
+object_inspected           無害な調査
+request_offered            category=object|situation を付ける
+request_ui_visible         提示から何ms でカードが出たか
+request_action_unlocked    [E] が押せるようになった
+request_action_started     特殊アクションの実行
+request_action_locked      ロックし直した
+invalid_special_action     Request 無しで特殊アクションが起きた（0件が正常）
+hey_input_context          focusedObject / activeRequest / requestActionAvailable
+request_candidate_generated / _rejected（reason に stale_timeout / left_object / grace_expired）
+```
+
+### 6. 実測
+
+```text
+object_inspected object=bath state=normal count=1 first=true  [active=0]
+request_selected id=bath_sip type=action reward=2000 tier=2    [active=1]
+request_offered  bath_sip:2000 type=action object=bath category=object
+request_action_unlocked id=bath_sip object=bath
+request_ui_visible id=bath_sip delay=17ms
+request_action_started id=bath_sip object=bath
+world_memory_created memory=bath_sip_1
+bath_sip count=1
+request_completed bath_sip:2000
+request_action_locked id=bath_sip reason=done
+```
+
+| Run | Discoveries | Object Req | Situation Req | Completed | UI | Invalid |
+| --- | --- | --- | --- | --- | --- | --- |
+| safe | 9 | 5 | 1 | 2 | 6 | 0 |
+| moderate | 6 | 7 | 4 | 7 | 11 | 0 |
+| greedy | 8 | 7 | 4 | 11 | 11 | 0 |
+| max greed | 6 | 9 | 1 | 9 | 10 | 0 |
+| greedy | 8 | 7 | 4 | 10 | 11 | 0 |
+
+修正前は `discoveries 9 / object requests 0`。

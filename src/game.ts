@@ -1388,7 +1388,7 @@ export class Game {
       this.lastPos = { x: p.x, z: p.z };
       // TURN AROUND 系の基準は、リクエストが出た瞬間に取り直す
       if (!this.f1.active) this.turnAnchor = this.player.yaw;
-      store.set({ request: this.f1.view() });
+      // 表示は publish() が一括で行う。ここで二重に set しない
     }
 
     // --- Novelty のKPIと「もう飽きられている」コメント ---
@@ -2275,7 +2275,10 @@ export class Game {
       discovered: this.monster.discovered,
       chasing: this.monster.chasing,
       discoveries: this.discoveryCount(),
-      request: active ? this.viewRequest(active) : null,
+      // FLOOR 1 は Floor1Mode が権威。
+      // ここで STANDARD 側だけを見ていたので、毎フレーム null で上書きしてしまい、
+      // request_offered が出ているのにカードが一度も表示されなかった。
+      request: this.floor1 && this.f1 ? this.f1.view() : active ? this.viewRequest(active) : null,
       prompt: this.promptText(),
       atEntrance:
         this.distanceToEntrance() <=
@@ -2306,8 +2309,24 @@ export class Game {
     this.logger.event(name, this.logRow(), detail);
   }
 
+  /** モードに関係なく、今アクティブな Request の権威ある状態 */
+  requestRuntime() {
+    if (this.floor1 && this.f1) return this.f1.requestRuntime();
+    const a = this.requests.active;
+    return {
+      active: (a ? 1 : 0) as 0 | 1,
+      id: a ? a.kind : '',
+      type: a ? a.kind : '',
+      reward: a ? a.reward : 0,
+      temptation: (a?.temptation ? 1 : 0) as 0 | 1,
+      state: a ? 'active' : 'none',
+      relatedObject: '',
+      actionUnlocked: !!a,
+    };
+  }
+
   private logRow(): LogRow {
-    const active = this.requests.active;
+    const rr = this.requestRuntime();
     const d = this.distanceToEntrance();
     return {
       mode: this.mode,
@@ -2335,10 +2354,12 @@ export class Game {
       monster_on_screen: this.framing.visible ? 1 : 0,
       monster_center_score: this.framing.center,
       discoveries: this.discoveryCount(),
-      request_active: active ? 1 : 0,
-      request_type: active ? active.kind : '',
-      request_reward: active ? active.reward : 0,
-      request_is_temptation: active?.temptation ? 1 : 0,
+      // FLOOR 1 は Floor1Mode が権威。STANDARD は RequestDirector。
+      // ここを片方だけ見ていたせいで request_offered なのに request_active=0 になっていた。
+      request_active: rr.active,
+      request_type: rr.type,
+      request_reward: rr.reward,
+      request_is_temptation: rr.temptation,
       requests_completed: this.requests.completedCount,
       distance_to_entrance: d,
       player_likely_leaving: this.leaving ? 1 : 0,

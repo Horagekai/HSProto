@@ -101,6 +101,10 @@ export function DebugPanel() {
                 `elapsed ${s.f1Debug.horror.pending.elapsed}`}
             />
           )}
+          <Row k="Request" v={s.f1Debug.request} />
+          <Row k="Request Counts" v={s.f1Debug.requestCounts} />
+          <Row k="Request Candidate" v={s.f1Debug.candidate} />
+          <Row k="Invalid Special Actions" v={String(s.f1Debug.invalidActions)} />
           <Row k="Top Candidates" v={s.f1Debug.horror.candidates.join(' / ') || '-'} />
           <Row k="Rejected" v={s.f1Debug.horror.rejected.join(' ') || '-'} />
           <Row k="Selected" v={s.f1Debug.horror.selected || '-'} />

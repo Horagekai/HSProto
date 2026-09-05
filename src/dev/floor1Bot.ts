@@ -81,6 +81,13 @@ export interface Floor1Run {
   requestOrder: string[];
   bathSips: number;
   ghostSelfies: number;
+  /** Object Request と Situation Request の内訳 */
+  objectRequests: number;
+  situationRequests: number;
+  /** Request 無しで特殊アクションが起きた回数。0 でなければバグ */
+  invalidSpecialActions: number;
+  requestUiShown: number;
+  inspected: string[];
   altarHold: number;
   phoneHold: number;
   goal: boolean;
@@ -139,6 +146,8 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
   let pressCd = 0;
   let goingHome = false;
   let fleeingLast = false;
+  /** この地点でもう調べたか */
+  let inspectedHere = false;
 
   // どこまで欲張るか
   const holdTarget =
@@ -237,6 +246,7 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
     const dirZ = flow ? flow.z : (target.z - p.position.z) / (dist || 1);
 
     const arrived = dist <= 1.3;
+    if (!arrived) inspectedHere = false;
     // --- 視線 ---
     let lx = dirX;
     let lz = dirZ;
@@ -261,6 +271,13 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
     } else {
       dwell += DT;
       if (currentGoal() && !active) campTimer += DT;
+      // 到着したら、まず「調べる」。
+      // Inspect が discovery と Request の資格を作るので、人間もここから始める。
+      if (!active && !inspectedHere && dwell > 0.8 && pressCd <= 0) {
+        inspectedHere = true;
+        pressCd = 0.8;
+        dev.key('KeyE');
+      }
     }
 
     // --- リクエストへの対応 ---
@@ -335,6 +352,11 @@ export function runFloor1(game: Game, style: Floor1Style, seconds = 7 * 60): Flo
     requestOrder,
     bathSips: k.bathSips as number,
     ghostSelfies: k.ghostSelfies as number,
+    objectRequests: k.objectRequestsOffered as number,
+    situationRequests: k.situationRequestsOffered as number,
+    invalidSpecialActions: k.invalidSpecialActions as number,
+    requestUiShown: k.requestUiShown as number,
+    inspected: (k.inspected as string[]) ?? [],
     altarHold: k.medianAltarHold as number,
     phoneHold: k.medianPhoneHold as number,
     goal: k.goal as boolean,

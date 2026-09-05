@@ -560,6 +560,12 @@ export interface Floor1Context {
   attention: Record<string, number>;
   /** 一度離れて戻ってきた対象 */
   reengaged: Set<string>;
+  /**
+   * Object Request がどれだけ足りていないか 0..1（§38-42）。
+   * 調べた対象が増えているのに Object Request が一度も出ていない状態は不自然。
+   * これは保証ではなく、スコアへの加点にしか使わない。
+   */
+  objectRequestNeed: number;
   /** 直前に触った / 達成したオブジェクト。状況Requestはこれに紐づく */
   lastObject: string | null;
   /** その出来事からの経過秒 */
@@ -729,6 +735,18 @@ export class Floor1Director {
   }
 
   /** 候補を出す。null なら今は出さない（沈黙も正解） */
+  /**
+   * Object Request が出ていない状態が続くほど、Object Request を押し出す。
+   * Situation Request（DON'T TURN AROUND など）に埋め尽くされるのを防ぐ（§43）。
+   */
+  private needBonus(def: Floor1RequestDef, ctx: Floor1Context) {
+    const n = ctx.objectRequestNeed;
+    if (n <= 0) return 0;
+    if (def.object) return n * CONFIG.floor1.objectNeed.objectBonus;
+    // 状況Requestは移動中・対象から離れている時のためのもの
+    return -n * CONFIG.floor1.objectNeed.situationPenalty;
+  }
+
   select(ctx: Floor1Context): Floor1RequestDef | null {
     const rejections: Rejection[] = [];
     const eligible: Floor1RequestDef[] = [];
@@ -739,7 +757,17 @@ export class Floor1Director {
     }
     this.lastRejections = rejections;
 
-    const scored = eligible.map((d) => this.score(d, ctx)).sort((a, b) => b.score - a.score);
+    const scored = eligible
+      .map((d) => {
+        const c = this.score(d, ctx);
+        const nb = this.needBonus(d, ctx);
+        if (nb) {
+          c.score += nb;
+          c.reasons.push(`objectNeed${nb > 0 ? '+' : ''}${nb.toFixed(0)}`);
+        }
+        return c;
+      })
+      .sort((a, b) => b.score - a.score);
     this.lastCandidates = scored.slice(0, 5);
     if (!scored.length) return null;
 

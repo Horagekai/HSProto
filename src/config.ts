@@ -751,6 +751,21 @@ export const CONFIG = {
 
     /** [E] で触れる距離 */
     interactRange: 3.0,
+    /**
+     * Object Request の不足（§38-43）。
+     * 「調べた対象が増えているのに Object Request が0件」を不自然として扱う。
+     * 3個調べたら必ず出す、のような固定保証はしない。
+     */
+    objectNeed: {
+      /** 調べた対象がこの数を超えると need が上がり始める */
+      inspectedFrom: 1,
+      inspectedTo: 3,
+      /** 最後の Object Request からこれだけ経つと need が上がる */
+      sinceFrom: 40,
+      sinceTo: 110,
+      objectBonus: 26,
+      situationPenalty: 20,
+    },
 
     /**
      * HOLD。押している間だけ不謹慎な行為が続く。
@@ -771,12 +786,29 @@ export const CONFIG = {
     pacing: {
       /** 候補が出てから実際に提示するまでの最短・最長 */
       offerDelay: { min: 2.5, max: 6 },
+      /**
+       * 候補の寿命。
+       * v1.3 までは出来事のたびに待ち時間を引き直していたので、
+       * Horror Event が10秒おきに出るだけで候補が55秒 Pending していた。
+       */
+      candidate: {
+        /** 出来事に譲れる合計秒数 */
+        maxDefer: 5,
+        /** 対象の近くにいる間は粘る */
+        graceNear: 15,
+        /** 離れたら早く諦める */
+        graceAway: 8,
+        /** 何があってもここで捨てる */
+        staleTimeout: 20,
+      },
       /** 意味のある出来事の直後はこれだけ空ける */
       afterEvent: 3.5,
       /** リクエスト終了後の静寂 */
       afterRequest: { min: 6, max: 12 },
       /** 発見トーストの直後 */
       afterDiscovery: 2.5,
+      /** Request 提示直後、無関係な恐怖を重ねない時間 */
+      decisionSpace: 3.5,
       /** 何も出さない時間の上限。これを超えたら世界の方を動かす */
       quietLimit: 22,
       /**

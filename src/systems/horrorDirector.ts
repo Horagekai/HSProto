@@ -692,6 +692,14 @@ export class HorrorDirector {
     }
   }
 
+  /**
+   * Request が提示された直後など、短い「決断の間」を作る（§78）。
+   * 既存の Relief Window を使うだけで、重みや Tension には触らない。
+   */
+  holdOff(seconds: number) {
+    this.relief = Math.max(this.relief, seconds);
+  }
+
   /** Chase が始まった / 終わった */
   markChase(started: boolean) {
     if (started) {

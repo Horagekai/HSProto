@@ -189,6 +189,10 @@ export interface Snapshot {
   /** FLOOR 1 のデバッグ表示 */
   f1Debug: {
     room: string;
+    request: string;
+    requestCounts: string;
+    candidate: string;
+    invalidActions: number;
     ghost: string;
     director: string;
     candidates: string[];

@@ -69,8 +69,26 @@ export interface Floor1Deps {
   distanceToEntrance: () => number;
 }
 
-interface ActiveRequest {
+export type RequestState =
+  | 'offered'
+  | 'active'
+  | 'completed'
+  | 'dismissed'
+  | 'ignored'
+  | 'failed';
+
+/**
+ * 唯一の権威ある Request 状態。
+ *
+ * UI / [E] のアンロック / HOLD / 制約 / 完了 / Dismiss / ログ / Debug HUD は
+ * **すべてここだけを見る。** 別に bool を持たない。
+ *
+ * v1.3 までは公開ログが STANDARD 側の RequestDirector を見ていたため、
+ * FLOOR 1 で request_offered が出ているのに request_active=0 になっていた。
+ */
+export interface ActiveRequest {
   def: Floor1RequestDef;
+  state: RequestState;
   timeLeft: number;
   progress: number;
   engaged: boolean;
@@ -81,9 +99,65 @@ interface ActiveRequest {
   /** constraint の保持時間 */
   held: number;
   offeredAt: number;
+  activatedAt?: number;
+  /**
+   * [E] の特殊アクションが解放されているか。
+   * リクエストの対象を見ていて、距離条件を満たしているときだけ true。
+   */
+  actionUnlocked: boolean;
+  /** UI に出たことをログしたか */
+  uiShown: boolean;
+  /** アンロックをログしたか */
+  unlockLogged: boolean;
 }
 
 const SOFA = { x: -9.3, z: -8 };
+
+/** Request が解放されているときだけ出る [E] の動詞 */
+const ACTION_VERB: Record<string, string> = {
+  bath_sip: 'DRINK',
+  bath_sip2: 'DRINK AGAIN',
+  bath_finish: 'FINISH IT',
+  phone_answer: 'PICK IT UP',
+  fridge_open: 'OPEN IT',
+  portrait_pick: 'PICK IT UP',
+  portrait_back: 'HANG IT BACK',
+};
+
+/**
+ * Inspect したときに出る説明。何も起こさない。
+ * ここで「飲める」と誤解させないよう、行動を促す文にはしない。
+ */
+const INSPECT_TEXT: Record<string, Record<string, string>> = {
+  altar: { default: 'A HOUSEHOLD ALTAR. THE BELL IS STILL HERE.' },
+  portraits: {
+    normal: 'THREE PORTRAITS. NOBODY IS SMILING.',
+    fallen: 'ONE OF THEM IS ON THE FLOOR.',
+    held: "YOU'RE HOLDING IT.",
+    restored: 'BACK ON THE WALL. NOT QUITE STRAIGHT.',
+    wrong: 'THAT IS NOT THE SAME FACE.',
+    default: 'THREE PORTRAITS.',
+  },
+  phone: {
+    ringing: 'IT IS RINGING.',
+    answered: 'THE LINE IS STILL OPEN.',
+    default: 'AN OLD CORDED PHONE.',
+  },
+  bath: { default: 'THE WATER HAS NOT BEEN CHANGED IN A LONG TIME.' },
+  fridge: {
+    open: 'IT IS OPEN. YOU CAN SMELL IT.',
+    default: 'THE FRIDGE IS STILL HUMMING.',
+  },
+  mirror: {
+    anomaly: 'SOMETHING IS WRONG WITH THE REFLECTION.',
+    default: 'YOU LOOK TIRED.',
+  },
+  oshiire: { default: 'A CLOSET. PACKED WITH BEDDING.' },
+  washer: { default: 'THE DRUM IS FULL OF WATER.' },
+  photo: { default: 'A FAMILY PHOTO. FOUR PEOPLE.' },
+  tv: { on: 'IT IS ON.', default: 'A DEAD CRT.' },
+  sofa: { default: 'THE CUSHION IS STILL PRESSED DOWN.' },
+};
 
 /** 各オブジェクトの発見コメント */
 const DISCOVERY_CHAT: Record<string, string[]> = {
@@ -125,6 +199,10 @@ export class Floor1Mode {
   /** 提示待ち。近くにいるだけでは出さず、間を置く */
   private pendingDef: Floor1RequestDef | null = null;
   private pendingDelay = 0;
+  /** 候補が生まれてからの経過。長く Pending させない */
+  private pendingAge = 0;
+  /** 出来事に譲った合計秒数 */
+  private pendingDeferred = 0;
   /** 次に候補を探すまでの静寂 */
   private quiet = 0;
   private elapsed = 0;
@@ -154,6 +232,16 @@ export class Floor1Mode {
   bathSips = 0;
   ghostSelfies = 0;
   voluntaryContinuations = 0;
+  /** Object Request と Situation Request の内訳 */
+  objectRequestsOffered = 0;
+  situationRequestsOffered = 0;
+  private lastObjectRequestAt = 0;
+  /** Request 無しで特殊アクションが起きた回数。0 でなければバグ */
+  invalidSpecialActions = 0;
+  private invalidLogged = new Set<string>();
+  /** 触れる対象を Inspect した数（ObjectRequestNeed の入力） */
+  inspectedObjects = new Set<string>();
+  requestUiShown = 0;
   private offeredHistory: string[] = [];
 
   constructor(private d: Floor1Deps) {}
@@ -168,6 +256,8 @@ export class Floor1Mode {
     this.active = null;
     this.pendingDef = null;
     this.pendingDelay = 0;
+    this.pendingAge = 0;
+    this.pendingDeferred = 0;
     this.quiet = randRange(4, 8);
     this.elapsed = 0;
     this.sinceEvent = 0;
@@ -197,6 +287,13 @@ export class Floor1Mode {
     this.bathSips = 0;
     this.ghostSelfies = 0;
     this.voluntaryContinuations = 0;
+    this.objectRequestsOffered = 0;
+    this.situationRequestsOffered = 0;
+    this.lastObjectRequestAt = 0;
+    this.invalidSpecialActions = 0;
+    this.invalidLogged.clear();
+    this.inspectedObjects.clear();
+    this.requestUiShown = 0;
     this.offeredHistory = [];
     this.d.setGhostSeatVisible(true);
   }
@@ -243,13 +340,14 @@ export class Floor1Mode {
   /** [E] の表示。遠くからは何も出さない（近づいて初めて出る） */
   prompt(): string | null {
     const a = this.active;
-    if (a && a.def.type === 'hold' && this.holdTargetReady()) {
-      return `[HOLD E] ${a.def.label}`;
+    // Request のアクションが解放されているときだけ、専用のプロンプトを出す。
+    // それ以外で [E] にできるのは「見る」だけ（§17, §23, §26）。
+    if (a && a.actionUnlocked) {
+      if (a.def.type === 'hold') return `[HOLD E] ${a.def.label}`;
+      if (a.def.type === 'action') return `[E] ${ACTION_VERB[a.def.id] ?? a.def.label}`;
     }
     const id = this.nearestInteractable();
     if (!id) return null;
-    const o = this.objects.get(id);
-    if (id === 'fridge' && o?.state !== 'bugs') return '[E] OPEN';
     return '[E] EXAMINE';
   }
 
@@ -330,14 +428,81 @@ export class Floor1Mode {
   // ---------------------------------------------------------------- //
 
   /** [E] の単押し */
+  /**
+   * [E] のルーター（§12-14, §29）。
+   *
+   *   1. 今の Request の特殊アクションが解放されていれば、それを実行
+   *   2. そうでなければ Inspect のみ（無害）
+   *   3. Request が無いのに危険な行動へ落ちない。HEY へも落とさない
+   *
+   * v1.3 までは [E] が直接 drinkBath() などを呼んでいて、
+   * 初回の一口が Viewer Request を完全にバイパスしていた。
+   */
   interact() {
     const id = this.nearestInteractable();
     if (!id) return false;
+
+    const a = this.active;
+    const isRequestTarget = !!a && a.def.object === id && a.actionUnlocked;
+    this.d.log(
+      'hey_input_context',
+      `focusedObject=${id} activeRequest=${a?.def.id ?? '-'} requestActionAvailable=${isRequestTarget}`,
+    );
+
+    if (isRequestTarget) return this.performRequestAction(id, a!);
+
+    // 特殊アクションを持つ対象は、Request が無ければ何も起こさない。
+    // ここで「見るだけ」に落とすのが今回の中心。
+    return this.inspectObject(id);
+  }
+
+  /**
+   * 無害な調査（§13）。
+   * 発見・説明・見た目の状態・視聴者の反応・Request の資格だけ。
+   * 飲む / 鳴らす / 受話器を取る / セルフィーは絶対にしない。
+   */
+  private inspectObject(id: string) {
     const st = this.objects.get(id);
     if (!st) return false;
+    const first = !this.inspectedObjects.has(id);
+    this.inspectedObjects.add(id);
+    // §13。Inspect は discovery を成立させる。
+    // ここが繋がっていないと「調べたのに Request の資格が立たない」になる。
+    if (!st.discovered) {
+      const spec = FLOOR1_OBJECTS.find((o) => o.id === id);
+      if (spec) this.discover(spec.id, spec.label, spec.discoveryLikes);
+      else st.discovered = true;
+    }
     st.interactions += 1;
     this.touchedObject(id);
-    this.d.log('object_interacted', `object=${id} state=${st.state} count=${st.interactions}`);
+    this.d.log(
+      'object_inspected',
+      `object=${id} state=${st.state} count=${st.interactions} first=${first}`,
+    );
+
+    this.d.toast(INSPECT_TEXT[id]?.[st.state] ?? INSPECT_TEXT[id]?.default ?? 'NOTHING HERE', 1.6);
+    // 視聴者が煽る。ただしこれは Request ではない（§47）
+    if (first) {
+      const lines = DISCOVERY_CHAT[id];
+      if (lines) this.d.chatLine(pick(lines));
+    } else if (Math.random() < 0.35) {
+      const lines = DISCOVERY_CHAT[id];
+      if (lines) this.d.chatLine(pick(lines));
+    }
+    return true;
+  }
+
+  /**
+   * Request がある時だけ実行できる特殊アクション（§14, §84）。
+   * bath_sip / altar_hold / phone_listen / ghost selfie は
+   * ActiveRequest 無しでは絶対に発生しない。
+   */
+  private performRequestAction(id: string, a: ActiveRequest) {
+    if (a.state === 'offered') {
+      a.state = 'active';
+      a.activatedAt = this.elapsed;
+    }
+    this.d.log('request_action_started', `id=${a.def.id} object=${id}`);
 
     switch (id) {
       case 'altar':
@@ -345,19 +510,15 @@ export class Floor1Mode {
         this.d.toast('...', 1.2);
         return true;
       case 'portraits':
-        return this.interactPortrait(st.state);
+        return this.interactPortrait(this.objects.get('portraits')!.state);
       case 'phone':
-        return this.interactPhone(st.state);
+        return this.interactPhone(this.objects.get('phone')!.state);
       case 'bath':
         return this.drinkBath();
       case 'fridge':
         return this.openFridge();
-      case 'mirror':
-        this.d.toast('YOU LOOK TIRED', 1.4);
-        return true;
       default:
-        this.d.toast('NOTHING HERE', 1.0);
-        return true;
+        return this.inspectObject(id);
     }
   }
 
@@ -412,7 +573,29 @@ export class Floor1Mode {
     return true;
   }
 
+  /**
+   * §84。ActiveRequest 無しでは絶対に起きてはいけない特殊アクション。
+   * 破られたら握りつぶさず記録する。テストはここを見る。
+   */
+  private requireRequestFor(object: string, what: string) {
+    const a = this.active;
+    const ok = !!a && a.def.object === object && a.actionUnlocked;
+    if (!ok) {
+      this.invalidSpecialActions += 1;
+      // 毎フレーム同じ行を吐くと、本当の違反が埋もれる
+      const key = `${what}:${a?.def.id ?? '-'}`;
+      if (this.invalidLogged.has(key)) return false;
+      this.invalidLogged.add(key);
+      this.d.log(
+        'invalid_special_action',
+        `action=${what} object=${object} activeRequest=${a?.def.id ?? '-'} unlocked=${a?.actionUnlocked ?? false}`,
+      );
+    }
+    return ok;
+  }
+
   private drinkBath() {
+    if (!this.requireRequestFor('bath', 'bath_sip')) return false;
     this.bathSips += 1;
     this.d.sfxWhisper(1);
     this.d.toast('YOU DRANK IT', 1.8);
@@ -462,12 +645,40 @@ export class Floor1Mode {
    * [E] を押している間だけ続く行為。
    * いつでも指を離せる。離した時点で終了し、すでに得た段の報酬は保持する。
    */
+  /**
+   * [E] の特殊アクションを解放するかどうか（§17, §50）。
+   * 対象に近づいて初めて解放する。UI から見て「今なら押せる」が分かるようにする。
+   */
+  private updateActionUnlock() {
+    const a = this.active;
+    if (!a) return;
+    if (a.state !== 'offered' && a.state !== 'active') {
+      a.actionUnlocked = false;
+      return;
+    }
+    if (!a.def.object) {
+      // 状況リクエストは対象を持たない。[E] のアクションも無い
+      a.actionUnlocked = false;
+      return;
+    }
+    // 距離のルールは1つだけ。nearestInteractable() は interactRange 固定なので、
+    // maxDistance がそれより大きい Request と食い違う。
+    const range = a.def.maxDistance ?? CONFIG.floor1.interactRange;
+    const unlocked = this.objDistance(a.def.object) <= range;
+    if (unlocked && !a.unlockLogged) {
+      a.unlockLogged = true;
+      this.d.log('request_action_unlocked', `id=${a.def.id} object=${a.def.object}`);
+    }
+    a.actionUnlocked = unlocked;
+  }
+
   private updateHold(dt: number, holding: boolean) {
     const a = this.active;
     if (!a || a.def.type !== 'hold' || !a.def.holdTiers) return;
     const ready = this.holdTargetReady();
     if (holding && ready) {
       if (a.hold === 0) {
+        if (a.def.object && !this.requireRequestFor(a.def.object, `${a.def.object}_hold`)) return;
         this.d.log('hold_started', `object=${a.def.object} request=${a.def.id}`);
         this.startHoldEffect(a.def);
       }
@@ -904,6 +1115,7 @@ export class Floor1Mode {
       sinceEvent: this.sinceEvent,
       attention: this.objects.attentionMap(),
       reengaged: this.objects.reengagedSet(),
+      objectRequestNeed: this.objectRequestNeed(),
       lastObject: this.lastObject,
       sinceObject: this.sinceObject,
     };
@@ -938,20 +1150,50 @@ export class Floor1Mode {
 
     if (this.active) return;
 
-    // 予約済みの提示を待つ
+    // 予約済みの提示を待つ（§31-37）
     if (this.pendingDef) {
       this.pendingDelay -= dt;
-      // 待っている間に強い出来事があったら、もう一度考え直す
-      if (this.sinceEvent < pace.afterEvent) {
-        this.pendingDelay = Math.max(this.pendingDelay, randRange(pace.offerDelay.min, pace.offerDelay.max));
+      this.pendingAge += dt;
+      const def = this.pendingDef;
+      const ctx = this.context();
+
+      // 待っている間に出来事があったら少しだけ譲る。
+      // ただし v1.3 までは毎フレーム引き直していたので、Horror Event が
+      // 10秒おきに出るだけで候補が 55秒 Pending し続けていた。
+      // 譲るのは合計 pace.candidate.maxDefer 秒まで。
+      if (this.sinceEvent < pace.afterEvent && this.pendingDeferred < pace.candidate.maxDefer) {
+        const add = Math.min(dt * 2, pace.candidate.maxDefer - this.pendingDeferred);
+        this.pendingDeferred += add;
+        this.pendingDelay += add;
       }
-      if (this.pendingDelay <= 0) {
-        const def = this.pendingDef;
+
+      // 対象の近くにいる間は少し粘る。離れたら早めに諦める
+      const near =
+        !def.object ||
+        (def.object === 'ghost' ? ctx.ghostDistance : ctx.distances[def.object] ?? 999) <=
+          (def.maxDistance ?? CONFIG.floor1.interactRange) * 1.6;
+      const limit = near ? pace.candidate.graceNear : pace.candidate.graceAway;
+      if (this.pendingAge > limit || this.pendingAge > pace.candidate.staleTimeout) {
         this.pendingDef = null;
-        // 出す直前にもう一度文脈を確認する
-        const ctx = this.context();
+        this.d.log(
+          'request_candidate_rejected',
+          `id=${def.id} reason=${this.pendingAge > pace.candidate.staleTimeout ? 'stale_timeout' : near ? 'grace_expired' : 'left_object'} age=${this.pendingAge.toFixed(1)}`,
+        );
+        this.quiet = randRange(2, 5);
+        return;
+      }
+
+      if (this.pendingDelay <= 0) {
+        this.pendingDef = null;
+        // 出す直前にもう一度文脈を確認する（§36）
         if (this.stillValid(def, ctx)) this.offer(def);
-        else this.d.log('request_candidate_rejected', `id=${def.id} reason=context_changed`);
+        else {
+          this.d.log(
+            'request_candidate_rejected',
+            `id=${def.id} reason=context_changed age=${this.pendingAge.toFixed(1)}`,
+          );
+          this.quiet = randRange(2, 5);
+        }
       }
       return;
     }
@@ -972,13 +1214,36 @@ export class Floor1Mode {
     // 近くにいることは条件であってトリガーではない。ここから更に間を置く
     this.pendingDef = def;
     this.pendingDelay = randRange(pace.offerDelay.min, pace.offerDelay.max);
-    this.d.log('object_became_eligible', `id=${def.id} delay=${this.pendingDelay.toFixed(1)}`);
+    this.pendingAge = 0;
+    this.pendingDeferred = 0;
+    this.d.log(
+      'request_candidate_generated',
+      `id=${def.id} warmup=${this.pendingDelay.toFixed(1)} object=${def.object ?? '-'}`,
+    );
 
     // 少し前に視聴者が匂わせる（毎回はやらない）
     if (Math.random() < 0.45) {
       const lines = def.object ? DISCOVERY_CHAT[def.object] : null;
       if (lines) this.d.chatLine(pick(lines));
     }
+  }
+
+  /**
+   * 0..1。Object Request がどれだけ足りていないか。
+   * 9個見つけて Object Request 0件、のような Run を防ぐための加点であって、
+   * 「N個調べたら必ず出す」ではない（§42）。
+   */
+  objectRequestNeed() {
+    const cfg = CONFIG.floor1.objectNeed;
+    if (this.objectRequestsOffered > 0) {
+      // 一度でも出ていれば、間隔だけを見る
+      const since = this.elapsed - this.lastObjectRequestAt;
+      return clamp01((since - cfg.sinceFrom) / (cfg.sinceTo - cfg.sinceFrom));
+    }
+    // 調べた数を主に見るが、見つけただけでも弱く効かせる。
+    // 実プレイで「9個見つけて Object Request 0件」が出ていたため。
+    const eff = Math.max(this.inspectedObjects.size, this.discoveries * 0.5);
+    return clamp01((eff - cfg.inspectedFrom) / (cfg.inspectedTo - cfg.inspectedFrom));
   }
 
   private stillValid(def: Floor1RequestDef, ctx: Floor1Context) {
@@ -991,8 +1256,11 @@ export class Floor1Mode {
   }
 
   private offer(def: Floor1RequestDef) {
+    // §7。ログより先に権威ある状態を作る。順序を逆にすると
+    // 「request_offered なのに request_active=0」が発生しうる。
     this.active = {
       def,
+      state: 'offered',
       timeLeft: def.time,
       progress: 0,
       engaged: false,
@@ -1001,8 +1269,14 @@ export class Floor1Mode {
       earned: 0,
       held: 0,
       offeredAt: this.elapsed,
+      actionUnlocked: false,
+      uiShown: false,
+      unlockLogged: false,
     };
     this.offered += 1;
+    if (def.object) this.objectRequestsOffered += 1;
+    else this.situationRequestsOffered += 1;
+    this.lastObjectRequestAt = def.object ? this.elapsed : this.lastObjectRequestAt;
     if (this.uniqueRequests.has(def.id)) this.repeatedRequests += 1;
     this.uniqueRequests.add(def.id);
     this.offeredHistory.push(def.id);
@@ -1011,7 +1285,10 @@ export class Floor1Mode {
     this.d.sfxSpike();
     this.d.chat(def.lastTemptation ? 'temptation' : 'request', 3);
     this.d.log('request_selected', `id=${def.id} type=${def.type} reward=${def.reward} tier=${def.riskTier}`);
-    this.d.log('request_offered', `${def.id}:${def.reward}`);
+    this.d.log(
+      'request_offered',
+      `${def.id}:${def.reward} type=${def.type} object=${def.object ?? '-'} category=${def.object ? 'object' : 'situation'}`,
+    );
     if (def.lastTemptation) this.lastTemptationDone = true;
   }
 
@@ -1034,6 +1311,13 @@ export class Floor1Mode {
     if (this.active && why === 'ignored') {
       this.ignored += 1;
       this.d.log('request_ignored', `${this.active.def.id}:${this.active.def.reward}`);
+    }
+    if (this.active) {
+      this.active.state = why === 'done' ? 'completed' : why === 'dismissed' ? 'dismissed' : 'ignored';
+      if (this.active.actionUnlocked) {
+        this.d.log('request_action_locked', `id=${this.active.def.id} reason=${why}`);
+      }
+      this.active.actionUnlocked = false;
     }
     this.active = null;
     // 終わった直後に溜まっていたものを出さない。改めて文脈を見る
@@ -1243,6 +1527,7 @@ export class Floor1Mode {
     this.memory.update(dt);
     this.updateDiscovery(dt);
     this.updateGhost(dt);
+    this.updateActionUnlock();
     this.updateHold(dt, input.holdingE);
     this.evaluate(dt, input);
     this.updateDirector(dt);
@@ -1395,6 +1680,15 @@ export class Floor1Mode {
 
   /** UIへ渡す */
   view(): RequestView | null {
+    // §48-49。UI に出た瞬間を記録する。request_offered から 250ms 以内に来ること。
+    if (this.active && !this.active.uiShown) {
+      this.active.uiShown = true;
+      this.requestUiShown += 1;
+      this.d.log(
+        'request_ui_visible',
+        `id=${this.active.def.id} delay=${((this.elapsed - this.active.offeredAt) * 1000).toFixed(0)}ms`,
+      );
+    }
     const a = this.active;
     if (!a) return null;
     const def = a.def;
@@ -1480,6 +1774,16 @@ export class Floor1Mode {
     this.d.log('debug_force', `FORCE_GREED ${kind}`);
   }
 
+  /** UI 確認とテスト用。指定のリクエストをその場で提示する */
+  debugOffer(id: string) {
+    const def = FLOOR1_POOL.find((x) => x.id === id);
+    if (!def) return false;
+    if (this.active) this.endRequest('dismissed');
+    this.pendingDef = null;
+    this.offer(def);
+    return true;
+  }
+
   /** 提示中のリクエストを即完了させる（Last Temptation を「乗った」ことにする） */
   forceTake() {
     const a = this.active;
@@ -1498,10 +1802,36 @@ export class Floor1Mode {
     if (def) this.runHorror(def);
   }
 
+  /**
+   * 唯一の公開 Request 状態（§6, §8, §9）。
+   * ログ行も UI も Debug HUD もこれを使う。別に bool を持たない。
+   */
+  requestRuntime() {
+    const a = this.active;
+    const live = !!a && (a.state === 'offered' || a.state === 'active');
+    return {
+      active: live ? 1 : (0 as 0 | 1),
+      id: live ? a!.def.id : '',
+      type: live ? a!.def.type : '',
+      reward: live ? a!.def.reward : 0,
+      temptation: live && a!.def.lastTemptation ? 1 : (0 as 0 | 1),
+      state: a ? a.state : 'none',
+      relatedObject: live ? a!.def.object ?? '' : '',
+      actionUnlocked: live ? a!.actionUnlocked : false,
+    };
+  }
+
   /** デバッグ表示 */
   debug() {
+    const rr = this.requestRuntime();
     return {
       room: this.room(),
+      request: `${rr.state} ${rr.id || '-'} active=${rr.active} type=${rr.type || '-'} ¥${rr.reward} unlocked=${rr.actionUnlocked}`,
+      requestCounts: `object ${this.objectRequestsOffered} / situation ${this.situationRequestsOffered} / need ${this.objectRequestNeed().toFixed(2)}`,
+      candidate: this.pendingDef
+        ? `${this.pendingDef.id} age=${this.pendingAge.toFixed(1)}s in=${this.pendingDelay.toFixed(1)}s`
+        : '-',
+      invalidActions: this.invalidSpecialActions,
       ghost: this.ghost,
       goal: this.goal,
       director: this.active ? 'ACTIVE' : this.pendingDef ? 'PENDING' : this.quiet > 0 ? 'QUIET' : 'IDLE',
@@ -1538,6 +1868,11 @@ export class Floor1Mode {
       medianPhoneHold: median(phone.map((h) => h.seconds)),
       phoneTier2: phone.filter((h) => h.tier >= 2).length,
       goal: this.goal,
+      objectRequestsOffered: this.objectRequestsOffered,
+      situationRequestsOffered: this.situationRequestsOffered,
+      invalidSpecialActions: this.invalidSpecialActions,
+      requestUiShown: this.requestUiShown,
+      inspected: [...this.inspectedObjects],
       lastTemptation: this.lastTemptationDone,
       memory: [...this.memory.all()],
       horror: this.horror.kpi(this.elapsed),

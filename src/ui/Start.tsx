@@ -12,7 +12,7 @@ const CONTROLS: Array<[string, string]> = [
   ['Q', 'HEY! — CALL OUT TO IT'],
   ['C', 'SELFIE MODE'],
   ['F', 'LIGHT ON / OFF'],
-  ['E', 'INSPECT / ANSWER / LEAVE'],
+  ['E', 'EXAMINE — AND THE REQUEST ACTION, ONLY WHEN ASKED'],
   ['X (hold)', 'DISMISS REQUEST (NO ACCEPT BUTTON)'],
   ['P', 'DEBUG PANEL'],
   ['ESC', 'RELEASE MOUSE'],
@@ -39,7 +39,7 @@ const MODES: Array<{
     tag: '本編1階のレイアウトで検証',
     lines: [
       '仏壇・遺影・電話・風呂・冷蔵庫・ソファの人影',
-      '押しっぱなしでやめられなくなる。近づいて初めて触れる',
+      '見るのは自由。飲む・鳴らす・受話器を取るのは、視聴者に頼まれたときだけ',
     ],
   },
   {
