@@ -385,3 +385,98 @@ request_action_locked id=bath_sip reason=done
 | greedy | 8 | 7 | 4 | 10 | 11 | 0 |
 
 修正前は `discoveries 9 / object requests 0`。
+
+
+---
+
+## Viewer Request v2 — 密度 / 状況Request / 実行フィードバック
+
+人間プレイで 150秒に 4件（状況Request は 1件）しか出ず、
+`KEEP IT IN FRAME` が「何を撮ればいいのか分からない」状態だった。
+
+### 1. 状況Requestは「お膳立て」で成立する
+
+v1 は `afterObject`（直前に触ったオブジェクト）必須だったため、
+移動中や幽霊を見失った直後には一切出せなかった。
+
+```text
+object      直前にオブジェクトへ触った
+moving      部屋から部屋へ移動している
+lingering   同じ場所に留まっている
+behind      背後で音がした
+ghostLost   見えていた幽霊を見失った
+returning   帰路
+afterEvent  Horror Event の直後の静けさ
+```
+
+どれか1つ立てば候補になる。`LOOK BEHIND YOU` は `behind` / `ghostLost` のみ、
+`KEEP WALKING` と `STOP` は `moving` のみ、と条件は Request ごとに違う。
+
+### 2. Object と Situation を取り合いにしない
+
+```text
+ObjectRequestNeed     +26 × need   （調べた対象 / 最後のObject Requestからの間隔）
+SituationRequestNeed  +26 × need   （最後のSituation Requestからの間隔）
+```
+
+v1 は `ObjectRequestNeed が高い → Situation を -20` というゼロサムだった。
+
+### 3. 追加した状況Request
+
+```text
+LOOK BEHIND YOU / STAY HERE / KEEP WALKING / STOP / GO BACK / NOW TURN AROUND
+```
+
+`NOW TURN AROUND` は `DON'T TURN AROUND` を守り切った後だけ、1Runに1回。
+
+### 4. 実行フィードバック
+
+`RequestView` が進捗の単一情報源になり、UI は計算しない。
+
+```ts
+kind: 'action' | 'hold' | 'constraint' | 'target_constraint'
+progressState: 'offered' | 'ready' | 'progress' | 'paused' | 'completed' | 'failed'
+progressSeconds / requiredSeconds / failureReason / targetName / targetLocked / earned / inputHint
+```
+
+```text
+KEEP THE FIGURE IN FRAME
+   DO NOT LOOK AWAY  [4 SEC]
+TARGET: THE FIGURE ON THE SOFA   NOT IN FRAME
+   ████░░░░░░░░  2.1 / 6.0 sec
+      TARGET NOT IN FRAME
+```
+
+**0% のまま黙らない。** `TARGET NOT IN FRAME` / `TOO FAR` / `MOVE CLOSER` /
+`HOLD E` / `PROGRESS PAUSED` のいずれかを必ず出す。
+
+### 5. KEEP IN FRAME の修正
+
+`ghost_frame` は `target_constraint` になり、**提示時点で幽霊が画面に映っていること**を要求する
+（`requiresVisible`、最大距離 18m → 14m）。
+見失った相手を撮り直させるのは別Request `GET IT BACK IN FRAME` に分けた。
+
+対象を見失っても進捗は 0 に戻らない。毎秒 0.35 でゆっくり減るだけ。
+
+```text
+見続けて3秒     progress 3.0/6.0s  locked=true
+目を離して2秒   paused   2.3/6.0s  TARGET NOT IN FRAME
+戻して1秒       progress 3.3/6.0s  locked=true
+                完了
+```
+
+### 6. 10Run の密度
+
+| | Before (人間プレイ) | After (10Run) |
+| --- | --- | --- |
+| Request | 150秒で4件 | 3.4〜6.6分で 6〜15件 |
+| Situation | 1件 | 2〜6件（合計44件） |
+| Object : Situation | 3 : 1 | 46 : 44 |
+| 同一Requestの連続 | — | 0% |
+
+```text
+平均間隔 28.1s   中央値 22〜37s   最長の無音 71.5s
+Situation: STAY HERE 14 / DON'T MOVE 10 / LIGHTS OFF 6 / DON'T TURN AROUND 6
+           KEEP WALKING 3 / LOOK BEHIND YOU 3 / NOW TURN AROUND 1 / TURN AROUND 1
+Safe Peak 初回: 27〜63s（v1.3 の固定55〜65sから分散）
+```

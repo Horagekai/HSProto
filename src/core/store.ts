@@ -32,6 +32,24 @@ export interface RequestView {
   constraint: boolean;
   /** 制約の残り秒数 */
   constraintLeft: number;
+
+  // --- 実行状況。UI は一切計算せず、ここを表示するだけ（§51） ---
+  kind: 'action' | 'hold' | 'constraint' | 'target_constraint';
+  /** OFFERED → READY → IN PROGRESS → COMPLETED / FAILED */
+  progressState: 'offered' | 'ready' | 'progress' | 'paused' | 'completed' | 'failed';
+  /** 進んだ秒数と必要な秒数。Progress Bar はこの2つで描く */
+  progressSeconds: number;
+  requiredSeconds: number;
+  /** 進んでいない理由。0% のまま無言にしない（§33, §43） */
+  failureReason: string | null;
+  /** 何を対象にしているか。「KEEP IT IN FRAME」だけにしない（§35, §36） */
+  targetName: string | null;
+  /** 対象が今ちゃんと捉えられているか */
+  targetLocked: boolean;
+  /** HOLD の獲得済み金額 */
+  earned: number;
+  /** [E] の入力ヒント */
+  inputHint: string | null;
 }
 
 export interface ResultData {

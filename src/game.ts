@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CONFIG, type GameMode, type InspectType } from './config';
 import { Input } from './core/input';
-import { store, type Phase } from './core/store';
+import { store, type Phase, type RequestView } from './core/store';
 import { clamp01, formatNumber, randRange } from './core/util';
 import { buildLevel, MONSTER_ANCHORS, PEEK_ANCHORS, type InspectPoint, type Level } from './world/level';
 import { buildGhostLevel, GHOST_MONSTER_ANCHORS, GHOST_PEEK_ANCHORS } from './world/ghostLevel';
@@ -2245,6 +2245,16 @@ export class Game {
         0,
         (DEFS[r.kind].constraint ?? 0) * (1 - r.progress),
       ),
+      // STANDARD 側は進捗UIの対象外。型を満たすだけの既定値を入れる
+      kind: (isConstraint(r.kind) ? 'constraint' : 'action') as RequestView['kind'],
+      progressState: (r.engaged ? 'progress' : 'offered') as RequestView['progressState'],
+      progressSeconds: (DEFS[r.kind].constraint ?? 0) * r.progress,
+      requiredSeconds: DEFS[r.kind].constraint ?? 0,
+      failureReason: null,
+      targetName: null,
+      targetLocked: false,
+      earned: 0,
+      inputHint: null,
     };
   }
 

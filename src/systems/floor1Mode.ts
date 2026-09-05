@@ -99,6 +99,9 @@ export interface ActiveRequest {
   /** constraint の保持時間 */
   held: number;
   offeredAt: number;
+  /** 提示された瞬間の部屋と入口までの距離（STAY HERE / GO BACK の基準） */
+  startRoom: string;
+  startEntranceDistance: number;
   activatedAt?: number;
   /**
    * [E] の特殊アクションが解放されているか。
@@ -109,6 +112,10 @@ export interface ActiveRequest {
   uiShown: boolean;
   /** アンロックをログしたか */
   unlockLogged: boolean;
+  /** 進捗が止まったことをログしたか */
+  pausedLogged: boolean;
+  /** 25%刻みでログした段 */
+  loggedStep: number;
 }
 
 const SOFA = { x: -9.3, z: -8 };
@@ -236,6 +243,27 @@ export class Floor1Mode {
   objectRequestsOffered = 0;
   situationRequestsOffered = 0;
   private lastObjectRequestAt = 0;
+  private lastSituationRequestAt = 0;
+  /** 移動している / 立ち止まっている時間 */
+  private movingTime = 0;
+  private stillTime = 0;
+  /** 背後で何かが起きた時刻 */
+  private behindAt = -999;
+  /** 最後に幽霊が見えていた時刻 */
+  private ghostSeenAt = -999;
+  /** 部屋が変わった時刻 */
+  private lastRoom: Floor1Room | null = null;
+  /** 部屋が変わってからの経過。移動中の判定に使う */
+  private roomChangedAt = -999;
+  /** 今この瞬間、進捗が進んでいるか（HOLD 中 / 制約を満たしている） */
+  private progressing = false;
+  /** target_constraint の対象を今ちゃんと捉えているか */
+  private targetLocked = false;
+  private targetTooFar = false;
+  private targetEverLocked = false;
+  get sinceRoomChange() {
+    return this.elapsed - this.roomChangedAt;
+  }
   /** Request 無しで特殊アクションが起きた回数。0 でなければバグ */
   invalidSpecialActions = 0;
   private invalidLogged = new Set<string>();
@@ -290,6 +318,13 @@ export class Floor1Mode {
     this.objectRequestsOffered = 0;
     this.situationRequestsOffered = 0;
     this.lastObjectRequestAt = 0;
+    this.lastSituationRequestAt = 0;
+    this.movingTime = 0;
+    this.stillTime = 0;
+    this.behindAt = -999;
+    this.ghostSeenAt = -999;
+    this.lastRoom = null;
+    this.roomChangedAt = -999;
     this.invalidSpecialActions = 0;
     this.invalidLogged.clear();
     this.inspectedObjects.clear();
@@ -675,6 +710,12 @@ export class Floor1Mode {
   private updateHold(dt: number, holding: boolean) {
     const a = this.active;
     if (!a || a.def.type !== 'hold' || !a.def.holdTiers) return;
+    if (!holding && a.hold > 0 && !a.pausedLogged) {
+      a.pausedLogged = true;
+      this.logProgress(a, 'request_progress_paused');
+      this.progressing = false;
+    }
+    if (holding) a.pausedLogged = false;
     const ready = this.holdTargetReady();
     if (holding && ready) {
       if (a.hold === 0) {
@@ -682,8 +723,10 @@ export class Floor1Mode {
         this.d.log('hold_started', `object=${a.def.object} request=${a.def.id}`);
         this.startHoldEffect(a.def);
       }
+      if (a.hold === 0) this.logProgress(a, 'request_progress_started');
       a.hold += dt;
       a.engaged = true;
+      this.progressing = true;
       this.holdEffect(a.def, a.hold, dt);
       // 段に到達したら即確定
       while (a.tier < a.def.holdTiers.length && a.hold >= a.def.holdTiers[a.tier].at) {
@@ -938,6 +981,7 @@ export class Floor1Mode {
         this.d.hint('FOOTSTEPS, SOMEWHERE', 2.2);
         break;
       case 'BehindFootstep':
+        this.markBehindEvent();
         this.d.sfxStep();
         this.d.hint('A STEP BEHIND YOU', 2.4);
         this.d.addDanger(3);
@@ -1046,6 +1090,8 @@ export class Floor1Mode {
         break;
     }
 
+    // 背後で起きたことは TURN AROUND 系のお膳立てになる
+    if (def.tags?.includes('behind') || def.family === 'GHOST_SPATIAL') this.markBehindEvent();
     const tags = def.requiredMemories?.length ? `memory=${def.requiredMemories[0]}` : '';
     this.d.chat(def.intensity === 'subtle' ? 'idle' : 'anomaly', def.intensity === 'subtle' ? 1 : 2);
     this.markEvent('anomaly');
@@ -1116,6 +1162,8 @@ export class Floor1Mode {
       attention: this.objects.attentionMap(),
       reengaged: this.objects.reengagedSet(),
       objectRequestNeed: this.objectRequestNeed(),
+      situationRequestNeed: this.situationRequestNeed(),
+      setups: this.currentSetups(),
       lastObject: this.lastObject,
       sinceObject: this.sinceObject,
     };
@@ -1208,7 +1256,8 @@ export class Floor1Mode {
       this.d.log('request_candidate_generated', `id=${c.def.id} score=${c.score.toFixed(1)} ${c.reasons.join(',')}`);
     }
     if (!def) {
-      this.quiet = randRange(3, 7);
+      // 候補が無いだけ。すぐ見直す
+      this.quiet = randRange(2, 4.5);
       return;
     }
     // 近くにいることは条件であってトリガーではない。ここから更に間を置く
@@ -1226,6 +1275,49 @@ export class Floor1Mode {
       const lines = def.object ? DISCOVERY_CHAT[def.object] : null;
       if (lines) this.d.chatLine(pick(lines));
     }
+  }
+
+  /**
+   * 今どんな「お膳立て」が成立しているか（§10-13）。
+   * 状況Requestは、これが1つでも立っていれば候補になれる。
+   */
+  private currentSetups() {
+    const cfg = CONFIG.floor1.setup;
+    const ghostVisible = (() => {
+      const g = this.ghost === 'seated' ? SOFA : this.d.ghostPos();
+      return this.d.isVisible(g.x, g.z, 1.3);
+    })();
+    if (ghostVisible) this.ghostSeenAt = this.elapsed;
+    return {
+      object: !!this.lastObject && this.sinceObject <= CONFIG.floor1.pacing.situationWindow,
+      moving: this.movingTime > cfg.movingFor,
+      lingering: this.stillTime > cfg.lingeringFor,
+      // 背後で何かがあった直後
+      behind: this.elapsed - this.behindAt < cfg.behindWindow,
+      // 見えていた幽霊を見失った
+      ghostLost:
+        this.objects.get('ghost')?.discovered === true &&
+        !ghostVisible &&
+        this.elapsed - this.ghostSeenAt < cfg.ghostLostWindow &&
+        this.elapsed - this.ghostSeenAt > 1.5,
+      returning: this.returningTime > 1.5 && this.d.distanceToEntrance() < 20,
+      afterEvent: this.sinceEvent > cfg.afterEventFrom && this.sinceEvent < cfg.afterEventTo,
+    };
+  }
+
+  /** 背後で何かが起きた。TURN AROUND 系のお膳立てになる（§13, §14） */
+  markBehindEvent() {
+    this.behindAt = this.elapsed;
+  }
+
+  /**
+   * 0..1。Situation Request がどれだけ足りていないか。
+   * Object と取り合いにしない。
+   */
+  situationRequestNeed() {
+    const cfg = CONFIG.floor1.objectNeed;
+    const since = this.elapsed - this.lastSituationRequestAt;
+    return clamp01((since - cfg.situationFrom) / (cfg.situationTo - cfg.situationFrom));
   }
 
   /**
@@ -1269,14 +1361,19 @@ export class Floor1Mode {
       earned: 0,
       held: 0,
       offeredAt: this.elapsed,
+      startRoom: this.room(),
+      startEntranceDistance: this.d.distanceToEntrance(),
       actionUnlocked: false,
       uiShown: false,
       unlockLogged: false,
+      pausedLogged: false,
+      loggedStep: -1,
     };
     this.offered += 1;
     if (def.object) this.objectRequestsOffered += 1;
     else this.situationRequestsOffered += 1;
-    this.lastObjectRequestAt = def.object ? this.elapsed : this.lastObjectRequestAt;
+    if (def.object) this.lastObjectRequestAt = this.elapsed;
+    else this.lastSituationRequestAt = this.elapsed;
     if (this.uniqueRequests.has(def.id)) this.repeatedRequests += 1;
     this.uniqueRequests.add(def.id);
     this.offeredHistory.push(def.id);
@@ -1309,6 +1406,8 @@ export class Floor1Mode {
   private endRequest(why: 'ignored' | 'dismissed' | 'done') {
     const pace = CONFIG.floor1.pacing;
     if (this.active && why === 'ignored') {
+      // 何も出さずにカードが消えるのは禁止（§46）
+      this.d.toast('REQUEST MISSED', 1.4);
       this.ignored += 1;
       this.d.log('request_ignored', `${this.active.def.id}:${this.active.def.reward}`);
     }
@@ -1322,10 +1421,14 @@ export class Floor1Mode {
     this.active = null;
     // 終わった直後に溜まっていたものを出さない。改めて文脈を見る
     this.pendingDef = null;
+    // 毎回同じ秒数にしない（§7）
     this.quiet = randRange(pace.afterRequest.min, pace.afterRequest.max);
+    if (Math.random() < 0.3) this.quiet *= randRange(1.4, 2.2);
   }
 
   private finish(a: ActiveRequest, reward: number) {
+    a.state = 'completed';
+    this.d.footage(`REQUEST COMPLETE   +¥${reward.toLocaleString()}`, 1.4);
     this.completed += 1;
     this.completedIds.add(a.def.id);
     if (a.def.object) this.touchedObject(a.def.object);
@@ -1405,6 +1508,10 @@ export class Floor1Mode {
         case 'bath_finish':
           done = this.bathSips >= 3;
           break;
+        case 'sit_go_back':
+          a.progress = clamp01((a.startEntranceDistance - this.d.distanceToEntrance()) / 8);
+          done = a.progress >= 1;
+          break;
         case 'ghost_closer':
           a.progress = clamp01((16 - this.objDistance('ghost')) / 10);
           done = this.objDistance('ghost') <= 6;
@@ -1429,6 +1536,8 @@ export class Floor1Mode {
           }
           break;
         }
+        case 'sit_look_behind':
+        case 'sit_now_turn':
         case 'sit_turn':
         case 'sit_turn_last':
           a.progress = clamp01(Math.abs(opts.turned) / Math.PI);
@@ -1444,7 +1553,7 @@ export class Floor1Mode {
       }
     }
 
-    if (def.type === 'constraint') {
+    if (def.type === 'constraint' || def.type === 'target_constraint') {
       const need = def.constraintSeconds ?? 5;
       let ok = false;
       switch (def.id) {
@@ -1458,9 +1567,13 @@ export class Floor1Mode {
           break;
         }
         case 'ghost_frame':
+        case 'ghost_refind':
         case 'chase_film': {
           const g = this.ghost === 'seated' ? SOFA : this.d.ghostPos();
-          ok = this.d.isVisible(g.x, g.z, 1.3);
+          const visible = this.d.isVisible(g.x, g.z, 1.3);
+          const far = this.objDistance('ghost') > (def.maxDistance ?? 18);
+          ok = visible && !far;
+          this.setTargetLock(ok, far);
           break;
         }
         case 'sit_dont_turn':
@@ -1479,11 +1592,37 @@ export class Floor1Mode {
           }
           ok = true;
           break;
+        case 'sit_stay_here':
+          if (this.room() !== a.startRoom) {
+            this.d.toast('YOU LEFT', 1.4);
+            this.endRequest('ignored');
+            return;
+          }
+          ok = true;
+          break;
+        case 'sit_keep_walking':
+          ok = opts.moved;
+          break;
+        case 'sit_stop':
+          ok = !opts.moved;
+          break;
       }
-      a.held = ok ? a.held + dt : Math.max(0, a.held - dt * 0.6);
+      // 対象を見失っても即0にはしない。ゆっくり減らす（§41）
+      const decay = def.type === 'target_constraint' ? dt * 0.35 : dt * 0.6;
+      const was = a.held;
+      a.held = ok ? a.held + dt : Math.max(0, a.held - decay);
+      this.progressing = ok;
+      if (ok && was === 0) this.logProgress(a, 'request_progress_started');
+      else if (!ok && was > 0 && !a.pausedLogged) {
+        a.pausedLogged = true;
+        this.logProgress(a, 'request_progress_paused');
+      }
+      if (ok) a.pausedLogged = false;
       a.progress = clamp01(a.held / need);
+      this.logProgressStep(a, a.progress);
       if (a.progress >= 0.5) a.engaged = true;
       if (a.held >= need) {
+        this.logProgress(a, 'request_progress_completed');
         this.finish(a, def.reward);
         return;
       }
@@ -1527,6 +1666,18 @@ export class Floor1Mode {
     this.memory.update(dt);
     this.updateDiscovery(dt);
     this.updateGhost(dt);
+    if (input.moved) {
+      this.movingTime += dt;
+      this.stillTime = 0;
+    } else {
+      this.stillTime += dt;
+      this.movingTime = 0;
+    }
+    const room = this.room();
+    if (room !== this.lastRoom) {
+      this.lastRoom = room;
+      this.roomChangedAt = this.elapsed;
+    }
     this.updateActionUnlock();
     this.updateHold(dt, input.holdingE);
     this.evaluate(dt, input);
@@ -1719,9 +1870,116 @@ export class Floor1Mode {
       nextTitle,
       nextReward,
       engaged: a.engaged,
-      constraint: def.type === 'constraint',
+      constraint: def.type === 'constraint' || def.type === 'target_constraint',
       constraintLeft: Math.max(0, (def.constraintSeconds ?? 0) - a.held),
+      ...this.progressView(a),
     };
+  }
+
+  /**
+   * 進捗の単一情報源（§51）。UI はここを表示するだけで、自分では何も計算しない。
+   */
+  private progressView(a: ActiveRequest) {
+    const def = a.def;
+    const kind: RequestView['kind'] =
+      def.type === 'target_constraint'
+        ? 'target_constraint'
+        : def.type === 'constraint'
+          ? 'constraint'
+          : def.type === 'hold'
+            ? 'hold'
+            : 'action';
+
+    const required =
+      def.type === 'hold'
+        ? (def.holdTiers?.[a.tier]?.at ?? def.holdTiers?.[def.holdTiers.length - 1]?.at ?? 0)
+        : (def.constraintSeconds ?? 0);
+    const seconds = def.type === 'hold' ? a.hold : a.held;
+
+    // 何が進行を止めているのか。0% のまま黙らない（§33, §43）
+    let failureReason: string | null = null;
+    let progressState = 'offered' as RequestView['progressState'];
+    if (a.state === 'completed') progressState = 'completed';
+    else if (seconds > 0.05) progressState = 'progress';
+    else if (a.actionUnlocked || def.type === 'constraint' || def.type === 'target_constraint') {
+      progressState = 'ready';
+    }
+    if (progressState === 'progress' && !this.progressing) {
+      progressState = 'paused' as RequestView['progressState'];
+    }
+
+    if (progressState === 'paused') failureReason = this.blockReason(a) ?? 'PROGRESS PAUSED';
+    else if (progressState !== 'completed' && progressState !== 'progress') {
+      failureReason = this.blockReason(a);
+    }
+
+    return {
+      kind,
+      progressState,
+      progressSeconds: Math.round(seconds * 10) / 10,
+      requiredSeconds: Math.round(required * 10) / 10,
+      failureReason,
+      targetName: def.targetName ?? null,
+      // 対象追跡は target_constraint だけの概念。他で誤解を招く表示をしない
+      targetLocked: def.type === 'target_constraint' ? this.targetLocked : false,
+      earned: a.earned,
+      inputHint:
+        def.type === 'hold'
+          ? a.actionUnlocked
+            ? '[HOLD E]'
+            : null
+          : def.type === 'action'
+            ? a.actionUnlocked
+              ? `[E] ${ACTION_VERB[def.id] ?? def.label}`
+              : null
+            : null,
+    };
+  }
+
+  /** 対象を捉えているかを更新し、変化したときだけログする（§54） */
+  private setTargetLock(locked: boolean, tooFar: boolean) {
+    this.targetTooFar = tooFar;
+    if (locked === this.targetLocked) return;
+    this.targetLocked = locked;
+    const a = this.active;
+    this.d.log(
+      locked ? (this.targetEverLocked ? 'target_reacquired' : 'target_in_frame') : 'target_lost',
+      `request=${a?.def.id ?? '-'} target=${a?.def.targetName ?? '-'} distance=${this.objDistance('ghost').toFixed(1)}`,
+    );
+    if (locked) this.targetEverLocked = true;
+  }
+
+  private logProgress(a: ActiveRequest, event: string) {
+    this.d.log(
+      event,
+      `id=${a.def.id} type=${a.def.type} seconds=${(a.def.type === 'hold' ? a.hold : a.held).toFixed(1)}`,
+    );
+  }
+
+  /** 毎フレーム書かない。25%刻みだけ（§53） */
+  private logProgressStep(a: ActiveRequest, progress: number) {
+    const step = Math.floor(progress * 4);
+    if (step <= a.loggedStep) return;
+    a.loggedStep = step;
+    this.d.log('request_progress_updated', `id=${a.def.id} progress=${step * 25}%`);
+  }
+
+  /** なぜ進んでいないのか。プレイヤーに見せる文言 */
+  private blockReason(a: ActiveRequest): string | null {
+    const def = a.def;
+    if (def.type === 'target_constraint') {
+      if (!this.targetLocked) return this.targetTooFar ? 'TOO FAR' : 'TARGET NOT IN FRAME';
+      return null;
+    }
+    if (def.type === 'constraint') return null;
+    if (!def.object) return null;
+    if (!a.actionUnlocked) {
+      const d = this.objDistance(def.object);
+      const range = def.maxDistance ?? CONFIG.floor1.interactRange;
+      return d > range ? 'MOVE CLOSER' : null;
+    }
+    if (def.type === 'hold') return 'HOLD E';
+    return null;
   }
 
   /**

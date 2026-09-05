@@ -14,7 +14,11 @@ import { FLOOR1_OBJECTS } from '../world/floor1Level';
  * で選ぶ。完全固定でも完全ランダムでもない。
  */
 
-export type Floor1RequestType = 'action' | 'hold' | 'constraint';
+/**
+ * target_constraint は「対象を捉え続ける」タイプ。
+ * constraint と分けるのは、UI に対象名と TARGET LOST を出す必要があるため（§50）。
+ */
+export type Floor1RequestType = 'action' | 'hold' | 'constraint' | 'target_constraint';
 
 export interface HoldTier {
   /** 何秒押し続けたら */
@@ -35,6 +39,11 @@ export interface Floor1RequestDef {
   riskTier: number;
   /** 関連オブジェクト。近くにいることが条件になる */
   object?: string;
+  /**
+   * UI に出す対象名。「KEEP IT IN FRAME」だけでは何を撮るのか分からない（§35-36）。
+   * object を持つ Request では必須に近い扱いにする。
+   */
+  targetName?: string;
   room?: Floor1Room;
   maxDistance?: number;
   /** "phone|ringing" のように オブジェクト|状態 */
@@ -46,13 +55,28 @@ export interface Floor1RequestDef {
   maxHaunted?: number;
   /** 幽霊がこの段階でないと出さない */
   requiredGhost?: GhostState[];
+  /** 提示の時点で対象が画面に入っていること */
+  requiresVisible?: boolean;
   /** これを達成済みでないと出さない */
   afterRequest?: string;
   /**
-   * 状況Request専用。**直前に触ったオブジェクトがこの中にある時だけ出す。**
-   * これが無いと「文脈と無関係な制約」が受け皿として出続けてしまう。
+   * 状況Request専用。直前に触ったオブジェクトがこの中にある時に出しやすくする。
+   * v2 からは「これだけ」ではなく、下の setups のどれか1つで成立すればよい。
    */
   afterObject?: string[];
+  /**
+   * 状況Requestが成立する「お膳立て」（§10-13）。
+   * どれか1つ満たせばよい。空なら afterObject だけで判断する。
+   *
+   *   object      直前にオブジェクトへ触った
+   *   moving      部屋から部屋へ移動している
+   *   lingering   同じ場所に留まっている
+   *   behind      背後で音がした / 幽霊が背後にいる
+   *   ghostLost   見えていた幽霊を見失った
+   *   returning   帰路
+   *   afterEvent  Horror Event の直後の静けさ
+   */
+  setups?: Array<'object' | 'moving' | 'lingering' | 'behind' | 'ghostLost' | 'returning' | 'afterEvent'>;
   cooldown: number;
   oncePerRun?: boolean;
   weight: number;
@@ -107,6 +131,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 1000,
     riskTier: 1,
     object: 'altar',
+    targetName: 'THE ALTAR',
     maxDistance: 3.2,
     cooldown: 60,
     weight: 1.2,
@@ -123,6 +148,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 1500,
     riskTier: 3,
     object: 'altar',
+    targetName: 'THE ALTAR',
     maxDistance: 3.2,
     requiredMemory: 'altar_overplayed',
     cooldown: 90,
@@ -142,6 +168,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 800,
     riskTier: 1,
     object: 'portraits',
+    targetName: 'THE PORTRAITS',
     maxDistance: 3,
     forbiddenState: 'portraits|fallen',
     cooldown: 60,
@@ -159,6 +186,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 2000,
     riskTier: 2,
     object: 'portraits',
+    targetName: 'THE PORTRAITS',
     maxDistance: 3,
     requiredState: 'portraits|fallen',
     cooldown: 40,
@@ -176,6 +204,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 4000,
     riskTier: 3,
     object: 'portraits',
+    targetName: 'THE PORTRAITS',
     maxDistance: 3,
     requiredState: 'portraits|held',
     afterRequest: 'portrait_pick',
@@ -195,6 +224,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 1500,
     riskTier: 2,
     object: 'phone',
+    targetName: 'THE PHONE',
     maxDistance: 3,
     requiredState: 'phone|ringing',
     cooldown: 30,
@@ -211,6 +241,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 1000,
     riskTier: 3,
     object: 'phone',
+    targetName: 'THE PHONE',
     maxDistance: 3,
     requiredState: 'phone|answered',
     cooldown: 40,
@@ -228,6 +259,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 10000,
     riskTier: 5,
     object: 'phone',
+    targetName: 'THE PHONE',
     maxDistance: 4,
     requiredMemory: 'phone_listened_long',
     cooldown: 999,
@@ -251,6 +283,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 2000,
     riskTier: 2,
     object: 'bath',
+    targetName: 'THE TUB',
     maxDistance: 3,
     forbiddenMemory: 'bath_sip_1',
     cooldown: 45,
@@ -268,6 +301,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 5000,
     riskTier: 3,
     object: 'bath',
+    targetName: 'THE TUB',
     maxDistance: 3,
     requiredMemory: 'bath_sip_1',
     forbiddenMemory: 'bath_sip_2',
@@ -286,6 +320,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 10000,
     riskTier: 5,
     object: 'bath',
+    targetName: 'THE TUB',
     maxDistance: 3,
     requiredMemory: 'bath_sip_2',
     cooldown: 60,
@@ -305,6 +340,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 2000,
     riskTier: 2,
     object: 'fridge',
+    targetName: 'THE FRIDGE',
     maxDistance: 3,
     requiredState: 'fridge|bugs',
     cooldown: 50,
@@ -323,6 +359,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 3000,
     riskTier: 3,
     object: 'mirror',
+    targetName: 'THE MIRROR',
     maxDistance: 3.5,
     minHaunted: 25,
     cooldown: 70,
@@ -334,12 +371,13 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
   },
   {
     id: 'mirror_stare',
-    label: 'KEEP LOOKING',
+    label: 'KEEP LOOKING AT THE MIRROR',
     desc: 'DO NOT LOOK AWAY',
-    type: 'constraint',
+    type: 'target_constraint',
     reward: 5000,
     riskTier: 4,
     object: 'mirror',
+    targetName: 'THE MIRROR',
     maxDistance: 3.5,
     afterRequest: 'mirror_dark',
     cooldown: 70,
@@ -358,6 +396,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 2000,
     riskTier: 2,
     object: 'ghost',
+    targetName: 'THE FIGURE ON THE SOFA',
     maxDistance: 16,
     requiredGhost: ['seated', 'aware'],
     cooldown: 45,
@@ -368,13 +407,17 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
   },
   {
     id: 'ghost_frame',
-    label: 'KEEP IT IN FRAME',
+    label: 'KEEP THE FIGURE IN FRAME',
     desc: 'DO NOT LOOK AWAY',
-    type: 'constraint',
+    type: 'target_constraint',
     reward: 3000,
     riskTier: 3,
     object: 'ghost',
-    maxDistance: 18,
+    targetName: 'THE FIGURE ON THE SOFA',
+    // 提示時点で「今まさに映っている」ことを要求する（§37-38）。
+    // 20m 先の見えない相手に KEEP IT IN FRAME を出さない。
+    maxDistance: 14,
+    requiresVisible: true,
     requiredGhost: ['seated', 'aware', 'standing'],
     cooldown: 55,
     weight: 1.3,
@@ -384,6 +427,25 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     haunting: 6,
   },
   {
+    // 見失った相手を撮り直させるのは別Request（§39）
+    id: 'ghost_refind',
+    label: 'GET IT BACK IN FRAME',
+    desc: 'FIND IT AGAIN',
+    type: 'target_constraint',
+    reward: 4000,
+    riskTier: 3,
+    object: 'ghost',
+    targetName: 'THE FIGURE',
+    maxDistance: 26,
+    requiredGhost: ['aware', 'standing', 'stalking'],
+    cooldown: 70,
+    weight: 1.2,
+    constraintSeconds: 4,
+    time: 24,
+    danger: 5,
+    haunting: 7,
+  },
+  {
     id: 'ghost_selfie',
     label: 'TAKE A SELFIE WITH IT',
     desc: '[C] SELFIE WITH IT IN FRAME',
@@ -391,6 +453,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 5000,
     riskTier: 4,
     object: 'ghost',
+    targetName: 'THE FIGURE ON THE SOFA',
     maxDistance: 12,
     requiredGhost: ['seated', 'aware', 'standing'],
     cooldown: 60,
@@ -407,6 +470,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 8000,
     riskTier: 5,
     object: 'ghost',
+    targetName: 'THE FIGURE ON THE SOFA',
     maxDistance: 10,
     requiredMemory: 'ghost_selfie_taken',
     cooldown: 70,
@@ -424,6 +488,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     reward: 15000,
     riskTier: 5,
     object: 'ghost',
+    targetName: 'THE FIGURE ON THE SOFA',
     maxDistance: 26,
     requiredMemory: 'ghost_selfie_taken',
     cooldown: 999,
@@ -450,6 +515,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     danger: 6,
     haunting: 8,
     afterObject: ['ghost', 'phone', 'mirror', 'fridge', 'portraits'],
+    setups: ['object', 'behind', 'ghostLost'],
   },
   {
     id: 'sit_turn',
@@ -465,6 +531,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     danger: 4,
     haunting: 6,
     afterObject: ['ghost', 'phone', 'mirror'],
+    setups: ['object', 'behind', 'ghostLost', 'afterEvent'],
   },
   {
     id: 'sit_dont_move',
@@ -481,6 +548,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     danger: 4,
     haunting: 6,
     afterObject: ['altar', 'bath', 'phone', 'portraits'],
+    setups: ['object', 'lingering', 'afterEvent'],
   },
   {
     id: 'sit_lights_off',
@@ -497,6 +565,7 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     danger: 5,
     haunting: 9,
     afterObject: ['mirror', 'altar', 'fridge'],
+    setups: ['object', 'lingering', 'afterEvent', 'returning'],
   },
   {
     id: 'sit_turn_last',
@@ -514,13 +583,109 @@ export const FLOOR1_POOL: Floor1RequestDef[] = [
     haunting: 8,
     lastTemptation: true,
     afterObject: ['ghost', 'phone', 'mirror'],
+    setups: ['object', 'returning', 'behind'],
+  },
+  {
+    // 背後で何かが鳴った直後だけ。Random には出さない（§13）
+    id: 'sit_look_behind',
+    label: 'LOOK BEHIND YOU',
+    desc: 'JUST LOOK',
+    type: 'action',
+    reward: 3000,
+    riskTier: 3,
+    cooldown: 70,
+    weight: 1.5,
+    time: 9,
+    danger: 3,
+    haunting: 5,
+    setups: ['behind', 'ghostLost'],
+  },
+  {
+    id: 'sit_stay_here',
+    label: 'STAY HERE',
+    desc: 'DO NOT LEAVE THIS ROOM',
+    type: 'constraint',
+    reward: 2500,
+    riskTier: 2,
+    cooldown: 80,
+    weight: 1.0,
+    constraintSeconds: 6,
+    time: 20,
+    danger: 3,
+    haunting: 5,
+    setups: ['moving', 'afterEvent', 'ghostLost'],
+  },
+  {
+    id: 'sit_keep_walking',
+    label: 'KEEP WALKING',
+    desc: 'DO NOT STOP',
+    type: 'constraint',
+    reward: 2500,
+    riskTier: 2,
+    minHaunted: 15,
+    cooldown: 80,
+    weight: 1.0,
+    constraintSeconds: 5,
+    time: 18,
+    danger: 3,
+    haunting: 4,
+    setups: ['moving', 'behind'],
+  },
+  {
+    id: 'sit_stop',
+    label: 'STOP',
+    desc: 'STOP RIGHT THERE',
+    type: 'constraint',
+    reward: 2500,
+    riskTier: 3,
+    minHaunted: 20,
+    cooldown: 85,
+    weight: 1.1,
+    constraintSeconds: 4,
+    time: 14,
+    danger: 4,
+    haunting: 5,
+    setups: ['moving', 'behind'],
+  },
+  {
+    id: 'sit_go_back',
+    label: 'GO BACK',
+    desc: 'THE WAY YOU CAME',
+    type: 'action',
+    reward: 3000,
+    riskTier: 3,
+    minHaunted: 25,
+    cooldown: 95,
+    weight: 0.9,
+    time: 22,
+    danger: 4,
+    haunting: 6,
+    setups: ['moving', 'returning'],
+  },
+  {
+    // DON'T TURN AROUND を守り切った直後だけの追い討ち（§16）
+    id: 'sit_now_turn',
+    label: 'NOW TURN AROUND',
+    desc: 'LOOK. RIGHT NOW.',
+    type: 'action',
+    reward: 10000,
+    riskTier: 5,
+    afterRequest: 'sit_dont_turn',
+    cooldown: 999,
+    oncePerRun: true,
+    weight: 0.6,
+    time: 8,
+    danger: 6,
+    haunting: 9,
+    setups: ['object', 'behind', 'afterEvent', 'lingering'],
   },
   // ---------------- CHASE ----------------
   {
     id: 'chase_film',
     label: 'FILM IT WHILE YOU RUN',
-    desc: 'KEEP IT IN FRAME',
-    type: 'constraint',
+    desc: 'KEEP THE FIGURE IN FRAME',
+    type: 'target_constraint',
+    targetName: 'THE FIGURE',
     reward: 8000,
     riskTier: 5,
     requiredGhost: ['chasing'],
@@ -566,6 +731,21 @@ export interface Floor1Context {
    * これは保証ではなく、スコアへの加点にしか使わない。
    */
   objectRequestNeed: number;
+  /**
+   * Situation Request がどれだけ足りていないか 0..1（§9-11）。
+   * Object と取り合いにしない。別々に持つ。
+   */
+  situationRequestNeed: number;
+  /** 今どんな「お膳立て」が成立しているか */
+  setups: {
+    object: boolean;
+    moving: boolean;
+    lingering: boolean;
+    behind: boolean;
+    ghostLost: boolean;
+    returning: boolean;
+    afterEvent: boolean;
+  };
   /** 直前に触った / 達成したオブジェクト。状況Requestはこれに紐づく */
   lastObject: string | null;
   /** その出来事からの経過秒 */
@@ -645,13 +825,21 @@ export class Floor1Director {
     if (def.minHaunted !== undefined && ctx.haunted < def.minHaunted) return 'haunted_low';
     if (def.maxHaunted !== undefined && ctx.haunted > def.maxHaunted) return 'haunted_high';
     if (def.requiredGhost && !def.requiredGhost.includes(ctx.ghost)) return 'ghost_state';
+    // 「今まさに映っているもの」に対してだけ出す Request（§37-38）
+    if (def.requiresVisible && !ctx.ghostOnScreen) return 'target_not_visible';
     if (def.lastTemptation && !ctx.returning) return 'not_returning';
 
-    // 状況Requestは、直前に触ったオブジェクトに紐づくものだけ出す（受け皿にしない）
+    // 状況Requestには「お膳立て」が要る。ただし直前のオブジェクトだけに限定しない。
+    // v1 では afterObject 必須にした結果、150秒のRunで状況Requestが1件しか出なかった。
     if (!def.object) {
-      if (!ctx.lastObject) return 'no_recent_object';
-      if (ctx.sinceObject > CONFIG.floor1.pacing.situationWindow) return 'object_too_old';
-      if (def.afterObject && !def.afterObject.includes(ctx.lastObject)) return 'object_mismatch';
+      const setups = def.setups ?? ['object'];
+      const ok = setups.some((k) => {
+        if (k !== 'object') return ctx.setups[k];
+        if (!ctx.lastObject) return false;
+        if (ctx.sinceObject > CONFIG.floor1.pacing.situationWindow) return false;
+        return !def.afterObject || def.afterObject.includes(ctx.lastObject);
+      });
+      if (!ok) return 'no_setup';
     }
     if (!def.lastTemptation && ctx.ghost === 'chasing' && def.id !== 'chase_film') return 'chasing';
     return null;
@@ -740,11 +928,11 @@ export class Floor1Director {
    * Situation Request（DON'T TURN AROUND など）に埋め尽くされるのを防ぐ（§43）。
    */
   private needBonus(def: Floor1RequestDef, ctx: Floor1Context) {
-    const n = ctx.objectRequestNeed;
-    if (n <= 0) return 0;
-    if (def.object) return n * CONFIG.floor1.objectNeed.objectBonus;
-    // 状況Requestは移動中・対象から離れている時のためのもの
-    return -n * CONFIG.floor1.objectNeed.situationPenalty;
+    // Object と Situation は取り合いではない。それぞれの不足に応じて別々に押す（§9, §61）。
+    const cfg = CONFIG.floor1.objectNeed;
+    return def.object
+      ? ctx.objectRequestNeed * cfg.objectBonus
+      : ctx.situationRequestNeed * cfg.situationBonus;
   }
 
   select(ctx: Floor1Context): Floor1RequestDef | null {

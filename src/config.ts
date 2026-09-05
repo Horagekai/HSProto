@@ -751,6 +751,15 @@ export const CONFIG = {
 
     /** [E] で触れる距離 */
     interactRange: 3.0,
+    /** 状況Requestの「お膳立て」判定（§10-13） */
+    setup: {
+      movingFor: 2.5,
+      lingeringFor: 4,
+      behindWindow: 6,
+      ghostLostWindow: 12,
+      afterEventFrom: 3,
+      afterEventTo: 14,
+    },
     /**
      * Object Request の不足（§38-43）。
      * 「調べた対象が増えているのに Object Request が0件」を不自然として扱う。
@@ -764,7 +773,11 @@ export const CONFIG = {
       sinceFrom: 40,
       sinceTo: 110,
       objectBonus: 26,
-      situationPenalty: 20,
+      /** 状況Requestの不足に対する加点。Object を押しのける減点はしない */
+      situationBonus: 26,
+      /** 最後の状況Requestからこれだけ経つと need が上がる */
+      situationFrom: 25,
+      situationTo: 70,
     },
 
     /**
@@ -785,7 +798,7 @@ export const CONFIG = {
      */
     pacing: {
       /** 候補が出てから実際に提示するまでの最短・最長 */
-      offerDelay: { min: 2.5, max: 6 },
+      offerDelay: { min: 2, max: 5.5 },
       /**
        * 候補の寿命。
        * v1.3 までは出来事のたびに待ち時間を引き直していたので、
@@ -804,7 +817,7 @@ export const CONFIG = {
       /** 意味のある出来事の直後はこれだけ空ける */
       afterEvent: 3.5,
       /** リクエスト終了後の静寂 */
-      afterRequest: { min: 6, max: 12 },
+      afterRequest: { min: 3, max: 8 },
       /** 発見トーストの直後 */
       afterDiscovery: 2.5,
       /** Request 提示直後、無関係な恐怖を重ねない時間 */

@@ -1042,3 +1042,73 @@ body,
 .modes-3 .mode-name {
   font-size: 14px;
 }
+
+
+/* --- Viewer Request v2: 実行状況 --- */
+.target-line {
+  margin-top: 6px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.5);
+}
+.target-line.locked {
+  color: rgba(120, 230, 160, 0.9);
+}
+.target-state {
+  margin-left: 8px;
+  font-weight: 700;
+}
+.progress {
+  margin-top: 8px;
+}
+.progress-bar {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, rgba(255, 214, 120, 0.95), rgba(255, 160, 90, 0.95));
+  transition: width 0.08s linear;
+}
+.progress-fill.paused {
+  background: rgba(255, 255, 255, 0.28);
+}
+.progress-label {
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.55);
+}
+.progress-reason {
+  margin-top: 6px;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: rgba(255, 130, 130, 0.9);
+}
+.input-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: rgba(255, 255, 255, 0.8);
+}
+.earned {
+  margin-top: 4px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: rgba(255, 214, 120, 0.95);
+}
+.constraint.paused .constraint-bar-fill {
+  background: rgba(255, 255, 255, 0.28);
+}
+.target-tag {
+  display: block;
+  margin-top: 4px;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: rgba(255, 130, 130, 0.9);
+}
+.target-tag.locked {
+  color: rgba(120, 230, 160, 0.9);
+}
